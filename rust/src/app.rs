@@ -144,6 +144,10 @@ pub struct PosturografoxApp {
     condicion: Condicion,
     superficie: Superficie,
     resultados_ctsib: HashMap<(Superficie, Condicion), MetricasBalance>,
+    // Solo se graba como resultado del CTSIB si esto está armado explícitamente
+    // (botón "Iniciar prueba"): pararse en la plataforma sin armar nada sigue
+    // funcionando para mirar el COP en vivo, pero no pisa el paso del examen.
+    ctsib_armado: bool,
 
     // Ejercicio de límites de estabilidad (ver src/limites.rs)
     ejercicio: limites::EjercicioLimites,
@@ -196,6 +200,7 @@ impl Default for PosturografoxApp {
             condicion: Condicion::default(),
             superficie: Superficie::default(),
             resultados_ctsib: HashMap::new(),
+            ctsib_armado: false,
 
             ejercicio: limites::EjercicioLimites::default(),
 
@@ -268,9 +273,12 @@ impl PosturografoxApp {
         self.ultima_sesion = metricas;
         self.ultima_condicion = self.condicion;
         self.ultima_superficie = self.superficie;
-        if let Some(m) = metricas {
-            self.resultados_ctsib.insert((self.superficie, self.condicion), m);
-            self.avanzar_paso_ctsib();
+        if self.ctsib_armado {
+            if let Some(m) = metricas {
+                self.resultados_ctsib.insert((self.superficie, self.condicion), m);
+                self.avanzar_paso_ctsib();
+            }
+            self.ctsib_armado = false;
         }
         self.ultimo_registro = std::mem::take(&mut self.sesion_actual);
         self.reiniciar_sesion();
@@ -479,23 +487,40 @@ impl PosturografoxApp {
 
             tarjeta(ui, "CTSIB", LILA, |ui| {
                 ui.label("ℹ").on_hover_text(
-                    "Examen guiado de 4 condiciones. Elegí un paso (o dejá el que está \
-                     marcado), parate en la plataforma unos segundos para esa condición \
-                     (se detecta solo y tara), y bajate para cerrarla: salta sola al \
-                     siguiente paso pendiente. El ✓ marca los pasos ya hechos. Los \
-                     cocientes Romberg/vestibular aparecen arriba del gráfico apenas \
-                     tengas los pares necesarios.",
+                    "Examen guiado de 4 condiciones. Elegí un paso y apretá 'Iniciar \
+                     prueba': recién ahí cuenta pararse en la plataforma como resultado \
+                     del CTSIB (sin armarlo, pararse solo muestra el COP en vivo, no \
+                     graba nada acá). Al bajarte se guarda ese paso y salta sola al \
+                     siguiente pendiente. El ✓ marca los pasos ya hechos.",
                 );
-                for (i, &(sup, cond)) in PASOS_CTSIB.iter().enumerate() {
-                    let hecho = self.resultados_ctsib.contains_key(&(sup, cond));
-                    let activo = self.superficie == sup && self.condicion == cond;
-                    let marca = if hecho { "✓" } else { "○" };
-                    let etiqueta = format!("{marca} {}. {} + {}", i + 1, sup.etiqueta(), cond.etiqueta());
-                    if ui.selectable_label(activo, etiqueta).clicked() {
-                        self.superficie = sup;
-                        self.condicion = cond;
+                ui.vertical(|ui| {
+                    for (i, &(sup, cond)) in PASOS_CTSIB.iter().enumerate() {
+                        let hecho = self.resultados_ctsib.contains_key(&(sup, cond));
+                        let activo = self.superficie == sup && self.condicion == cond;
+                        let marca = if hecho { "✓" } else { "○" };
+                        let etiqueta = format!("{marca} {}. {} + {}", i + 1, sup.etiqueta(), cond.etiqueta());
+                        let respuesta = ui.selectable_label(activo, etiqueta);
+                        if !self.ctsib_armado && respuesta.clicked() {
+                            self.superficie = sup;
+                            self.condicion = cond;
+                        }
                     }
-                }
+
+                    ui.separator();
+                    if self.ctsib_armado {
+                        let estado = if self.ocupado { "grabando..." } else { "subite a la plataforma" };
+                        ui.label(format!(
+                            "Prueba armada: {} + {} — {estado}",
+                            self.superficie.etiqueta(),
+                            self.condicion.etiqueta()
+                        ));
+                        if ui.button("Cancelar").clicked() {
+                            self.ctsib_armado = false;
+                        }
+                    } else if ui.button("Iniciar prueba").clicked() {
+                        self.ctsib_armado = true;
+                    }
+                });
             });
 
             tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
