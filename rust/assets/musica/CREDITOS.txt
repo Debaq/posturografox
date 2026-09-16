@@ -5,6 +5,21 @@ jugando.ogg  — "Leaving Home", del mismo pack
              Reencodeados a Ogg Vorbis (calidad ~q4) para reducir tamaño; sin
              otros cambios de contenido.
 
-fin.ogg      — "jingles_NES09", del pack "Music Jingles" por Kenney (kenney.nl)
-             Fuente: https://kenney.nl/assets/music-jingles
+comer.ogg    — "Apple Bite" (mordisco), subido a OpenGameArt, extraído de una
+             grabación de freesound.org
+             Fuente: https://opengameart.org/content/apple-bite
              Licencia: CC0 1.0 (dominio público, no requiere atribución)
+
+caida.ogg    — "Funny Cartoon Slip And Fall Sound Effect", por Free Sounds Library
+             Fuente: https://www.freesoundslibrary.com/funny-cartoon-slip-and-fall-sound-effect/
+             Licencia: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+             Recortado a mono/Ogg Vorbis; sin otros cambios de contenido.
+
+victoria.ogg — "Win sound", por listener4me (vía OpenGameArt)
+             Fuente: https://opengameart.org/content/win-sound-effect
+             Licencia: CC0 1.0 (dominio público, no requiere atribución)
+
+derrota.ogg  — "Game Over - Repeating Dream", del pack "Game Over Jingles Pack"
+             por Devlin Bataric (recortado a los primeros ~3.5s con fade-out)
+             Fuente: https://opengameart.org/content/69-game-over-jingles-pack
+             Licencia: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)

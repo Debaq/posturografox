@@ -25,6 +25,23 @@ const ROCAS_BYTES: &[u8] = include_bytes!("../assets/rocas.png");
 const ROCAS_COLUMNAS: u32 = 12;
 const ROCAS_FILAS: u32 = 1;
 
+// Íconos de "vida" para el contador del HUD: índice 0 = conejo, 1 = gallina.
+const CONTADOR_BYTES: &[u8] = include_bytes!("../assets/contador.png");
+const CONTADOR_COLUMNAS: u32 = 2;
+const CONTADOR_FILAS: u32 = 1;
+
+// Animación de tropiezo del zorro al chocar con una roca (mientras dura
+// `Partida::pausa`), grilla 2x2.
+const CAIDA_BYTES: &[u8] = include_bytes!("../assets/caida.png");
+const CAIDA_COLUMNAS: u32 = 2;
+const CAIDA_FILAS: u32 = 2;
+
+// Celebración de la pantalla de victoria: zorro + gallina + conejo de la
+// mano, grilla 2x2, se anima en loop mientras dura la pantalla.
+const WINWIN_BYTES: &[u8] = include_bytes!("../assets/winwin.png");
+const WINWIN_COLUMNAS: u32 = 2;
+const WINWIN_FILAS: u32 = 2;
+
 // Fondo de la partida: alterna día/noche cada METROS_POR_CICLO metros
 // recorridos (usa el puntaje, que ya se muestra en "m" en el HUD).
 const FONDO_DIA_BYTES: &[u8] = include_bytes!("../assets/fondodia.png");
@@ -74,7 +91,10 @@ const MARGEN_PISTA: f32 = 24.0;
 // --- audio (ver assets/musica/CREDITOS.txt por licencias) ---
 const MUSICA_MENU: &[u8] = include_bytes!("../assets/musica/menu.ogg");
 const MUSICA_JUGANDO: &[u8] = include_bytes!("../assets/musica/jugando.ogg");
-const SONIDO_FIN: &[u8] = include_bytes!("../assets/musica/fin.ogg");
+const SONIDO_COMER: &[u8] = include_bytes!("../assets/musica/comer.ogg");
+const SONIDO_CAIDA: &[u8] = include_bytes!("../assets/musica/caida.ogg");
+const SONIDO_VICTORIA: &[u8] = include_bytes!("../assets/musica/victoria.ogg");
+const SONIDO_DERROTA: &[u8] = include_bytes!("../assets/musica/derrota.ogg");
 const VOLUMEN_MUSICA: f32 = 0.35;
 const VOLUMEN_EFECTOS: f32 = 0.6;
 
@@ -192,6 +212,14 @@ impl TipoRecompensa {
         match self {
             TipoRecompensa::Gallina => 0.85,
             TipoRecompensa::Conejo => 0.8,
+        }
+    }
+
+    /// Índice del ícono correspondiente en `contador.png`.
+    fn indice_contador(self) -> usize {
+        match self {
+            TipoRecompensa::Conejo => 0,
+            TipoRecompensa::Gallina => 1,
         }
     }
 }
@@ -357,12 +385,29 @@ struct Partida {
     game_over: bool,
     temporizador_reinicio: f32,
     sonido_fin_reproducido: bool,
+    sonido_victoria_reproducido: bool,
+    /// Gallinas/conejos comidos que hacen de "escudo": cada roca que golpea
+    /// consume el último de la pila en vez de terminar la partida.
+    vidas: Vec<TipoRecompensa>,
+    /// Segundos restantes de congelamiento tras perder una vida contra una
+    /// roca (placeholder hasta que haya una animación de golpe).
+    pausa: f32,
+    /// Cuenta regresiva de la partida completa; en 0 se gana.
+    tiempo_restante: f32,
+    gano: bool,
     rng: Rng,
 }
+
+/// Cuánto dura una partida completa. Si el reloj llega a 0 sin haber
+/// perdido, se muestra la pantalla de victoria.
+const DURACION_PARTIDA_SEGUNDOS: f32 = 60.0;
 
 /// Segundos de la cuenta atrás en la pantalla de game over antes de
 /// reintentar solo.
 const REINICIO_SEGUNDOS: f32 = 6.0;
+
+/// Segundos que se congela el juego al perder una vida contra una roca.
+const PAUSA_GOLPE_SEGUNDOS: f32 = 0.8;
 
 impl Partida {
     fn nueva() -> Self {
@@ -378,6 +423,11 @@ impl Partida {
             game_over: false,
             temporizador_reinicio: REINICIO_SEGUNDOS,
             sonido_fin_reproducido: false,
+            sonido_victoria_reproducido: false,
+            vidas: Vec::new(),
+            pausa: 0.0,
+            tiempo_restante: DURACION_PARTIDA_SEGUNDOS,
+            gano: false,
             rng: Rng::nueva(),
         }
     }
@@ -397,6 +447,9 @@ pub struct EstadoJuego {
     sprite_fondo_noche: Option<SpriteSheet>,
     sprite_fondo_halloween: Option<SpriteSheet>,
     sprite_plataforma: Option<SpriteSheet>,
+    sprite_contador: Option<SpriteSheet>,
+    sprite_caida: Option<SpriteSheet>,
+    sprite_winwin: Option<SpriteSheet>,
     audio: Option<Audio>,
     audio_intentado: bool,
 }
@@ -443,13 +496,28 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     );
     let plataforma =
         obtener_sprite(ui, &mut estado.sprite_plataforma, "plataforma_sprite", PLATAFORMA_BYTES, 1, 1);
-    let audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado);
+    let contador = obtener_sprite(
+        ui,
+        &mut estado.sprite_contador,
+        "contador_sprite",
+        CONTADOR_BYTES,
+        CONTADOR_COLUMNAS,
+        CONTADOR_FILAS,
+    );
+    let caida = obtener_sprite(ui, &mut estado.sprite_caida, "caida_sprite", CAIDA_BYTES, CAIDA_COLUMNAS, CAIDA_FILAS);
+    let winwin =
+        obtener_sprite(ui, &mut estado.sprite_winwin, "winwin_sprite", WINWIN_BYTES, WINWIN_COLUMNAS, WINWIN_FILAS);
+    let mut audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado);
 
     if !entrada.conectado {
         estado.partida = None; // evita que arranque con velocidad "gratis" mientras no hay lecturas
-        if let Some(audio) = audio {
-            audio.poner_pista(Pista::Menu);
-            audio.mantener_loop();
+        if let Some(audio) = audio.as_deref_mut() {
+            if salir_tecla {
+                audio.detener_musica(); // se sale al modo clínico, no dejar sonando
+            } else {
+                audio.poner_pista(Pista::Menu);
+                audio.mantener_loop();
+            }
         }
         dibujar_desconectado(ui, &zorro);
         return salir_tecla;
@@ -458,17 +526,17 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     let partida = estado.partida.get_or_insert_with(Partida::nueva);
 
     if partida.game_over {
-        if let Some(audio) = audio {
+        if let Some(audio) = audio.as_deref_mut() {
             if !partida.sonido_fin_reproducido {
                 audio.detener_musica();
-                audio.reproducir_efecto(SONIDO_FIN);
+                audio.reproducir_efecto(SONIDO_DERROTA);
                 partida.sonido_fin_reproducido = true;
             }
         }
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_game_over(
             ui,
-            &zorro,
+            &caida,
             partida.puntaje,
             estado.puntaje_maximo,
             partida.temporizador_reinicio.max(0.0),
@@ -480,18 +548,49 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         return salir_tecla || salir_boton;
     }
 
-    if let Some(audio) = audio {
+    if let Some(audio) = audio.as_deref_mut() {
         audio.poner_pista(Pista::Jugando);
         audio.mantener_loop();
     }
 
     actualizar(partida, &entrada);
+
+    if partida.gano {
+        if let Some(audio) = audio.as_deref_mut() {
+            if !partida.sonido_victoria_reproducido {
+                audio.detener_musica();
+                audio.reproducir_efecto(SONIDO_VICTORIA);
+                partida.sonido_victoria_reproducido = true;
+            }
+        }
+        if partida.puntaje > estado.puntaje_maximo {
+            estado.puntaje_maximo = partida.puntaje;
+        }
+        partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
+        let (salir_boton, reintentar) = dibujar_victoria(
+            ui,
+            &winwin,
+            partida.puntaje,
+            estado.puntaje_maximo,
+            partida.temporizador_reinicio.max(0.0),
+        );
+        if reintentar || partida.temporizador_reinicio <= 0.0 {
+            estado.partida = Some(Partida::nueva());
+        }
+        return salir_tecla || salir_boton;
+    }
+
     let salir_boton = dibujar_partida(
-        ui, &zorro, &gallina, &conejo, &rocas, &fondo_dia, &fondo_noche, &fondo_halloween, &plataforma,
-        partida,
+        ui, &zorro, &caida, &gallina, &conejo, &rocas, &fondo_dia, &fondo_noche, &fondo_halloween,
+        &plataforma, &contador, audio.as_deref_mut(), partida,
     );
     if partida.game_over && partida.puntaje > estado.puntaje_maximo {
         estado.puntaje_maximo = partida.puntaje;
+    }
+    if salir_tecla || salir_boton {
+        if let Some(audio) = audio.as_deref_mut() {
+            audio.detener_musica(); // se sale al modo clínico, no dejar sonando
+        }
     }
 
     salir_tecla || salir_boton
@@ -499,6 +598,17 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 
 fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
     let dt = entrada.dt.clamp(0.0, 0.1);
+
+    if partida.pausa > 0.0 {
+        partida.pausa = (partida.pausa - dt).max(0.0);
+        return; // congelado: nada se mueve ni spawnea mientras dura el golpe
+    }
+
+    partida.tiempo_restante = (partida.tiempo_restante - dt).max(0.0);
+    if partida.tiempo_restante <= 0.0 {
+        partida.gano = true;
+        return;
+    }
 
     // Normaliza el COP ML al rango de la pista (-1.0 izq .. 1.0 der).
     let mitad_ancho = (entrada.ancho_cm / 2.0).max(1.0);
@@ -563,6 +673,7 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
 fn dibujar_partida(
     ui: &mut Ui,
     zorro: &SpriteSheet,
+    caida_sprite: &SpriteSheet,
     gallina_sprite: &SpriteSheet,
     conejo_sprite: &SpriteSheet,
     rocas_sprite: &SpriteSheet,
@@ -570,6 +681,8 @@ fn dibujar_partida(
     fondo_noche: &SpriteSheet,
     fondo_halloween: &SpriteSheet,
     plataforma: &SpriteSheet,
+    contador_sprite: &SpriteSheet,
+    audio: Option<&mut Audio>,
     partida: &mut Partida,
 ) -> bool {
     let rect = ui.available_rect_before_wrap();
@@ -578,12 +691,20 @@ fn dibujar_partida(
     // (se repite cada 4 tramos de METROS_POR_CICLO metros recorridos, mismo
     // número que ya se muestra en el HUD).
     let tramo = (partida.puntaje / METROS_POR_CICLO) as usize % SECUENCIA_FONDOS.len();
-    let fondo_actual = match SECUENCIA_FONDOS[tramo] {
+    let fondo_del_tramo = SECUENCIA_FONDOS[tramo];
+    let fondo_actual = match fondo_del_tramo {
         Fondo::Dia => fondo_dia,
         Fondo::Noche => fondo_noche,
         Fondo::Halloween => fondo_halloween,
     };
     fondo_actual.dibujar_cubriendo(ui, rect, 0);
+
+    // Fondos oscuros (noche/halloween) necesitan los números del HUD en
+    // blanco para que se lean; de día se mantiene el color oscuro de siempre.
+    let color_hud = match fondo_del_tramo {
+        Fondo::Dia => TEXTO,
+        Fondo::Noche | Fondo::Halloween => Color32::WHITE,
+    };
 
     let alto_plataforma = (rect.height() * 0.14).clamp(50.0, 130.0);
     plataforma.dibujar_tileado(ui, rect, 0, alto_plataforma);
@@ -612,7 +733,15 @@ fn dibujar_partida(
                 alto_zorro * 0.4,
                 roca_rect,
             ) {
-                golpe = true;
+                obstaculo.esquivado = true; // esta roca ya no puede golpear de nuevo
+                if partida.vidas.pop().is_some() {
+                    partida.pausa = PAUSA_GOLPE_SEGUNDOS;
+                    if let Some(audio) = &audio {
+                        audio.reproducir_efecto(SONIDO_CAIDA);
+                    }
+                } else {
+                    golpe = true;
+                }
             } else if roca_rect.top() > y_zorro + alto_zorro * 0.5 {
                 obstaculo.esquivado = true;
                 partida.puntaje += 25.0;
@@ -636,7 +765,11 @@ fn dibujar_partida(
 
         if circulo_rect_colisiona(Pos2::new(x_zorro, y_zorro), alto_zorro * 0.4, rect_colision) {
             partida.puntaje += r.tipo.puntos();
+            partida.vidas.push(r.tipo);
             partida.recompensas.remove(i);
+            if let Some(audio) = &audio {
+                audio.reproducir_efecto(SONIDO_COMER);
+            }
             continue;
         }
 
@@ -645,10 +778,18 @@ fn dibujar_partida(
         i += 1;
     }
 
-    let fps_carrera = 8.0 + partida.velocidad * 0.012;
-    let frame = (partida.tiempo * fps_carrera) as usize;
-    let inclinacion = (partida.fox_x * 0.28).clamp(-0.4, 0.4);
-    zorro.dibujar(ui, Pos2::new(x_zorro, y_zorro), alto_zorro, frame, inclinacion);
+    if partida.pausa > 0.0 {
+        // Tropiezo: se reemplaza la corrida por la animación de caída,
+        // avanzando sus 4 frames a lo largo de toda la pausa.
+        let transcurrido = PAUSA_GOLPE_SEGUNDOS - partida.pausa;
+        let frame_caida = ((transcurrido / PAUSA_GOLPE_SEGUNDOS) * 4.0) as usize;
+        caida_sprite.dibujar(ui, Pos2::new(x_zorro, y_zorro), alto_zorro, frame_caida.min(3), 0.0);
+    } else {
+        let fps_carrera = 8.0 + partida.velocidad * 0.012;
+        let frame = (partida.tiempo * fps_carrera) as usize;
+        let inclinacion = (partida.fox_x * 0.28).clamp(-0.4, 0.4);
+        zorro.dibujar(ui, Pos2::new(x_zorro, y_zorro), alto_zorro, frame, inclinacion);
+    }
 
     // HUD.
     painter.text(
@@ -656,14 +797,48 @@ fn dibujar_partida(
         Align2::LEFT_TOP,
         format!("🏃 {} m", partida.puntaje as i32),
         egui::FontId::proportional(26.0),
-        TEXTO,
+        color_hud,
     );
+
+    // Vidas: contador "ícono x N" (gallinas arriba, conejos abajo) en vez de
+    // un ícono por cada una, para que no se haga una fila interminable.
+    let alto_vida = (rect.width() * 0.03).clamp(26.0, 40.0) * 2.0;
+    let tamano_vida = contador_sprite.tamano_para_alto(alto_vida);
+    let x_vida = rect.left() + 16.0;
+    let y_gallinas = rect.top() + 96.0;
+    let y_conejos = y_gallinas + alto_vida + 10.0;
+    let gallinas_vivas = partida.vidas.iter().filter(|t| matches!(t, TipoRecompensa::Gallina)).count();
+    let conejos_vivos = partida.vidas.iter().filter(|t| matches!(t, TipoRecompensa::Conejo)).count();
+
+    for (y, indice, cantidad) in [
+        (y_gallinas, TipoRecompensa::Gallina.indice_contador(), gallinas_vivas),
+        (y_conejos, TipoRecompensa::Conejo.indice_contador(), conejos_vivos),
+    ] {
+        contador_sprite.dibujar_en(ui, Pos2::new(x_vida + tamano_vida.x / 2.0, y), tamano_vida, indice, 0.0);
+        painter.text(
+            Pos2::new(x_vida + tamano_vida.x + 8.0, y),
+            Align2::LEFT_CENTER,
+            format!("x{cantidad}"),
+            egui::FontId::proportional(alto_vida * 0.5),
+            color_hud,
+        );
+    }
+
+    // Reloj de la partida: cuenta regresiva desde DURACION_PARTIDA_SEGUNDOS.
+    let segundos_totales = partida.tiempo_restante.ceil().max(0.0) as i32;
     painter.text(
         Pos2::new(rect.right() - 16.0, rect.top() + 12.0),
         Align2::RIGHT_TOP,
+        format!("{:02}:{:02}", segundos_totales / 60, segundos_totales % 60),
+        egui::FontId::proportional((rect.width() * 0.04).clamp(28.0, 46.0)),
+        color_hud,
+    );
+    painter.text(
+        Pos2::new(rect.right() - 16.0, rect.top() + 58.0),
+        Align2::RIGHT_TOP,
         "ESC para salir",
         egui::FontId::proportional(14.0),
-        TEXTO.gamma_multiply(0.7),
+        color_hud.gamma_multiply(0.7),
     );
 
     let boton_rect = Rect::from_min_size(
@@ -755,7 +930,7 @@ fn dibujar_desconectado(ui: &mut Ui, sprite: &SpriteSheet) {
 /// como maximizada, y muestra una cuenta atrás que reintenta sola.
 fn dibujar_game_over(
     ui: &mut Ui,
-    sprite: &SpriteSheet,
+    caida_sprite: &SpriteSheet,
     puntaje: f32,
     puntaje_maximo: f32,
     segundos_reinicio: f32,
@@ -791,8 +966,13 @@ fn dibujar_game_over(
 
     texto_centrado("💥 PERDISTE EL EQUILIBRIO", 0.07, (alto * 0.028).clamp(15.0, 22.0), ROJO_GOLPE);
 
+    // Reproduce la caída una vez (los primeros ~0.8s de la pantalla) y se
+    // queda en el último frame (tirado, mareado) por el resto de la cuenta
+    // atrás.
+    let transcurrido = REINICIO_SEGUNDOS - segundos_reinicio;
+    let frame_caida = ((transcurrido / 0.8) * 4.0) as usize;
     let alto_zorro = (alto * 0.30).clamp(130.0, 340.0);
-    sprite.dibujar(ui, Pos2::new(cx, rect.top() + alto * 0.35), alto_zorro, 2, 0.0);
+    caida_sprite.dibujar(ui, Pos2::new(cx, rect.top() + alto * 0.35), alto_zorro, frame_caida.min(3), 0.0);
 
     texto_centrado("PUNTAJE", 0.565, (alto * 0.02).clamp(12.0, 16.0), TEXTO.gamma_multiply(0.6));
     texto_centrado(&format!("{} m", puntaje as i32), 0.645, (alto * 0.09).clamp(42.0, 100.0), TEXTO);
@@ -808,18 +988,34 @@ fn dibujar_game_over(
         if es_record { ROJO_GOLPE } else { TEXTO.gamma_multiply(0.7) },
     );
 
-    // Cuenta atrás para reintentar solo.
+    let (salir, reintentar) = dibujar_pie_fin_partida(ui, rect, cx, alto, segundos_reinicio, ROJO_GOLPE);
+    ui.ctx().request_repaint();
+    (salir, reintentar)
+}
+
+/// Barra de cuenta atrás + botones "Reintentar"/"Salir" que comparten la
+/// pantalla de game over y la de victoria.
+fn dibujar_pie_fin_partida(
+    ui: &mut Ui,
+    rect: Rect,
+    cx: f32,
+    alto: f32,
+    segundos_reinicio: f32,
+    color_barra: Color32,
+) -> (bool, bool) {
+    let painter = ui.painter();
     let ancho_barra = (rect.width() * 0.32).clamp(200.0, 420.0);
     let y_barra = rect.top() + alto * 0.83;
     let fraccion = (segundos_reinicio / REINICIO_SEGUNDOS).clamp(0.0, 1.0);
     let fondo_barra = Rect::from_center_size(Pos2::new(cx, y_barra), Vec2::new(ancho_barra, 10.0));
     painter.rect_filled(fondo_barra, 5.0, Color32::from_black_alpha(30));
     let relleno_barra = Rect::from_min_size(fondo_barra.min, Vec2::new(ancho_barra * fraccion, 10.0));
-    painter.rect_filled(relleno_barra, 5.0, ROJO_GOLPE.gamma_multiply(0.8));
-    texto_centrado(
-        &format!("Reintentando en {}s...", segundos_reinicio.ceil().max(0.0) as i32),
-        0.795,
-        (alto * 0.02).clamp(12.0, 15.0),
+    painter.rect_filled(relleno_barra, 5.0, color_barra.gamma_multiply(0.8));
+    painter.text(
+        Pos2::new(cx, rect.top() + alto * 0.795),
+        Align2::CENTER_CENTER,
+        format!("Reintentando en {}s...", segundos_reinicio.ceil().max(0.0) as i32),
+        egui::FontId::proportional((alto * 0.02).clamp(12.0, 15.0)),
         TEXTO.gamma_multiply(0.65),
     );
 
@@ -840,7 +1036,72 @@ fn dibujar_game_over(
         .put(rect_reintentar, egui::Button::new(RichText::new("🔁 Reintentar").size(16.0)))
         .clicked();
     let salir = ui.put(rect_salir, egui::Button::new(RichText::new("Salir").size(15.0))).clicked();
+    (salir, reintentar)
+}
 
+/// Pantalla de victoria: se llega cuando se acaban los 2 minutos de partida
+/// sin perder. Placeholder con el zorro de espaldas (parado) hasta que haya
+/// un asset dedicado.
+fn dibujar_victoria(
+    ui: &mut Ui,
+    winwin_sprite: &SpriteSheet,
+    puntaje: f32,
+    puntaje_maximo: f32,
+    segundos_reinicio: f32,
+) -> (bool, bool) {
+    let rect = ui.available_rect_before_wrap();
+    let painter = ui.painter();
+    let cx = rect.center().x;
+    let alto = rect.height();
+    let es_record = puntaje >= puntaje_maximo && puntaje > 0.0;
+
+    const DORADO: Color32 = Color32::from_rgb(214, 160, 40);
+
+    let franjas = 24;
+    for i in 0..franjas {
+        let t0 = i as f32 / franjas as f32;
+        let t1 = (i + 1) as f32 / franjas as f32;
+        let color = lerp_color(CIELO_ARRIBA, CIELO_ABAJO, t0);
+        let franja = Rect::from_min_max(
+            Pos2::new(rect.left(), rect.top() + t0 * alto),
+            Pos2::new(rect.right(), rect.top() + t1 * alto),
+        );
+        painter.rect_filled(franja, 0.0, color);
+    }
+
+    let texto_centrado = |texto: &str, y_frac: f32, tamano: f32, color: Color32| {
+        painter.text(
+            Pos2::new(cx, rect.top() + alto * y_frac),
+            Align2::CENTER_CENTER,
+            texto,
+            egui::FontId::proportional(tamano),
+            color,
+        );
+    };
+
+    texto_centrado("🏆 ¡AGUANTASTE LOS 2 MINUTOS!", 0.07, (alto * 0.028).clamp(15.0, 22.0), DORADO);
+
+    // Celebración en loop mientras dura la pantalla.
+    let transcurrido = REINICIO_SEGUNDOS - segundos_reinicio;
+    let frame_win = (transcurrido * 3.0) as usize;
+    let alto_zorro = (alto * 0.30).clamp(130.0, 340.0);
+    winwin_sprite.dibujar(ui, Pos2::new(cx, rect.top() + alto * 0.35), alto_zorro, frame_win, 0.0);
+
+    texto_centrado("PUNTAJE", 0.565, (alto * 0.02).clamp(12.0, 16.0), TEXTO.gamma_multiply(0.6));
+    texto_centrado(&format!("{} m", puntaje as i32), 0.645, (alto * 0.09).clamp(42.0, 100.0), TEXTO);
+    let texto_mejor = if es_record {
+        "🏆 ¡Nuevo mejor puntaje!".to_string()
+    } else {
+        format!("Mejor puntaje: {} m", puntaje_maximo as i32)
+    };
+    texto_centrado(
+        &texto_mejor,
+        0.735,
+        (alto * 0.026).clamp(15.0, 20.0),
+        if es_record { DORADO } else { TEXTO.gamma_multiply(0.7) },
+    );
+
+    let (salir, reintentar) = dibujar_pie_fin_partida(ui, rect, cx, alto, segundos_reinicio, DORADO);
     ui.ctx().request_repaint();
     (salir, reintentar)
 }
