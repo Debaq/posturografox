@@ -1,0 +1,10 @@
+menu.ogg     — "Home Menu", del pack "Surpass Your Limits!" por Preston Peak (PPEAK)
+jugando.ogg  — "Leaving Home", del mismo pack
+             Fuente: https://opengameart.org/content/free-action-chiptune-music-pack
+             Licencia: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+             Reencodeados a Ogg Vorbis (calidad ~q4) para reducir tamaño; sin
+             otros cambios de contenido.
+
+fin.ogg      — "jingles_NES09", del pack "Music Jingles" por Kenney (kenney.nl)
+             Fuente: https://kenney.nl/assets/music-jingles
+             Licencia: CC0 1.0 (dominio público, no requiere atribución)

@@ -10,3 +10,6 @@ dist/
 
 # Rust
 /rust/target/
+
+# Claude Code (estado local de la herramienta, no del proyecto)
+/.claude/
