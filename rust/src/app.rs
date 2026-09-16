@@ -29,11 +29,44 @@ const ETIQUETAS: [&str; 4] = ["fd", "fi", "bd", "bi"];
 const CHI2_95_2GL: f64 = 5.991_46;
 
 // ── Paleta: pasteles contrastantes sobre fondo claro (look clínico) ─────────
-const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML
-const NARANJA: Color32 = Color32::from_rgb(240, 165, 100); // curva AP
-const CORAL: Color32 = Color32::from_rgb(222, 118, 112); // punto COP actual
-const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 95%
+const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML / conexión
+const NARANJA: Color32 = Color32::from_rgb(240, 165, 100); // curva AP / firmware
+const CORAL: Color32 = Color32::from_rgb(222, 118, 112); // punto COP actual / desconectar
+const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 95% / detección
+const VERDE: Color32 = Color32::from_rgb(120, 178, 140); // plataforma / calibración
 const GUIA: Color32 = Color32::from_gray(180); // líneas de referencia en 0,0
+
+// ── Superficies: fondo tipo "dashboard" + tarjetas blancas con sombra ───────
+const LIENZO: Color32 = Color32::from_rgb(235, 238, 242);
+const TARJETA_BG: Color32 = Color32::from_rgb(252, 253, 254);
+
+fn sombra_tarjeta() -> egui::Shadow {
+    egui::Shadow {
+        offset: [0, 2],
+        blur: 10,
+        spread: 0,
+        color: Color32::from_black_alpha(22),
+    }
+}
+
+/// Tarjeta con acento de color por categoría: agrupa controles relacionados
+/// en vez de tirarlos todos en una única fila (look "tablero de instrumentos"
+/// en lugar de una barra de widgets sin jerarquía visual).
+fn tarjeta(ui: &mut egui::Ui, titulo: &str, acento: Color32, contenido: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(TARJETA_BG)
+        .stroke(egui::Stroke::new(1.2, acento.gamma_multiply(0.55)))
+        .corner_radius(10.0)
+        .shadow(sombra_tarjeta())
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new(titulo).small().strong().color(acento.gamma_multiply(0.7)));
+                ui.add_space(3.0);
+                ui.horizontal(|ui| contenido(ui));
+            });
+        });
+}
 
 /// Métricas clásicas de estabilometría, calculadas sobre el trazo COP de una sesión.
 #[derive(Clone, Copy, Default)]
@@ -372,90 +405,109 @@ impl PosturografoxApp {
     }
 
     fn barra_controles(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Puerto:");
-            egui::ComboBox::from_id_salt("combo_puerto")
-                .selected_text(self.puerto_seleccionado.clone().unwrap_or_else(|| "—".to_string()))
-                .show_ui(ui, |ui| {
-                    for p in self.puertos.clone() {
-                        ui.selectable_value(&mut self.puerto_seleccionado, Some(p.clone()), p);
-                    }
-                });
-            if ui.button("Actualizar").clicked() {
-                self.puertos = puertos_usables();
-            }
+        ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
 
+        ui.horizontal_wrapped(|ui| {
             let conectado = self.conexion.is_some();
-            if ui.button(if conectado { "Desconectar" } else { "Conectar" }).clicked() {
-                self.alternar_conexion();
-            }
-            if ui.add_enabled(conectado, egui::Button::new("Tara firmware")).clicked() {
-                if let Some(c) = &mut self.conexion {
-                    c.enviar_comando(b't');
+
+            tarjeta(ui, "CONEXIÓN", AZUL, |ui| {
+                egui::ComboBox::from_id_salt("combo_puerto")
+                    .width(150.0)
+                    .selected_text(self.puerto_seleccionado.clone().unwrap_or_else(|| "Sin puerto".to_string()))
+                    .show_ui(ui, |ui| {
+                        for p in self.puertos.clone() {
+                            ui.selectable_value(&mut self.puerto_seleccionado, Some(p.clone()), p);
+                        }
+                    });
+                if ui.button("⟳").on_hover_text("Actualizar lista de puertos").clicked() {
+                    self.puertos = puertos_usables();
                 }
-            }
-            if ui.add_enabled(conectado, egui::Button::new("Resincronizar")).clicked() {
-                if let Some(c) = &mut self.conexion {
-                    c.enviar_comando(b's');
+                if ui.button(if conectado { "Desconectar" } else { "Conectar" }).clicked() {
+                    self.alternar_conexion();
                 }
-            }
-            if ui.button("Limpiar trazo").clicked() {
-                self.limpiar_trazo();
-            }
-        });
+            });
 
-        ui.horizontal(|ui| {
-            ui.label("Ancho (cm):");
-            ui.add(egui::DragValue::new(&mut self.ancho_cm).range(1.0..=500.0).speed(0.5));
-            ui.label("Profundidad (cm):");
-            ui.add(egui::DragValue::new(&mut self.prof_cm).range(1.0..=500.0).speed(0.5));
-        });
+            tarjeta(ui, "FIRMWARE", NARANJA, |ui| {
+                if ui.add_enabled(conectado, egui::Button::new("Tara")).clicked() {
+                    if let Some(c) = &mut self.conexion {
+                        c.enviar_comando(b't');
+                    }
+                }
+                if ui.add_enabled(conectado, egui::Button::new("Resincronizar")).clicked() {
+                    if let Some(c) = &mut self.conexion {
+                        c.enviar_comando(b's');
+                    }
+                }
+            });
 
-        ui.horizontal(|ui| {
-            if ui
-                .button("Tara (software)")
-                .on_hover_text(format!(
-                    "Promedia las últimas {MUESTRAS_TARA_SW} muestras crudas y las fija como cero"
-                ))
-                .clicked()
-            {
-                self.tara_software(false);
-            }
-            for (i, etq) in ETIQUETAS.iter().enumerate() {
-                ui.label(format!("Gan. {etq}:"));
-                ui.add(
-                    egui::DragValue::new(&mut self.ganancia[i])
-                        .range(0.0001..=1000.0)
-                        .speed(0.01)
-                        .fixed_decimals(4),
-                );
-            }
-        });
+            tarjeta(ui, "PLATAFORMA", VERDE, |ui| {
+                ui.label("Ancho");
+                ui.add(egui::DragValue::new(&mut self.ancho_cm).range(1.0..=500.0).speed(0.5).suffix(" cm"));
+                ui.label("Prof.");
+                ui.add(egui::DragValue::new(&mut self.prof_cm).range(1.0..=500.0).speed(0.5).suffix(" cm"));
+            });
 
-        ui.horizontal(|ui| {
-            ui.label("Umbral detección (cuentas crudas):");
-            ui.add(egui::DragValue::new(&mut self.umbral).range(0.0..=10_000_000.0).speed(100.0));
-            ui.label("Espaciado puntos (muestras):");
-            ui.add(egui::DragValue::new(&mut self.espaciado_puntos).range(1..=200));
+            tarjeta(ui, "CALIBRACIÓN", VERDE, |ui| {
+                if ui
+                    .button("Tara")
+                    .on_hover_text(format!(
+                        "Promedia las últimas {MUESTRAS_TARA_SW} muestras crudas y las fija como cero"
+                    ))
+                    .clicked()
+                {
+                    self.tara_software(false);
+                }
+                for (i, etq) in ETIQUETAS.iter().enumerate() {
+                    ui.label(etq.to_uppercase());
+                    ui.add(
+                        egui::DragValue::new(&mut self.ganancia[i])
+                            .range(0.0001..=1000.0)
+                            .speed(0.01)
+                            .fixed_decimals(3),
+                    );
+                }
+            });
+
+            tarjeta(ui, "DETECCIÓN AUTOMÁTICA", LILA, |ui| {
+                ui.label("Umbral");
+                ui.add(egui::DragValue::new(&mut self.umbral).range(0.0..=10_000_000.0).speed(100.0));
+                ui.label("Espaciado");
+                ui.add(egui::DragValue::new(&mut self.espaciado_puntos).range(1..=200));
+            });
+
+            tarjeta(ui, "TRAZO", CORAL, |ui| {
+                if ui.button("Limpiar").clicked() {
+                    self.limpiar_trazo();
+                }
+            });
         });
     }
 
     fn panel_metricas(&self, ui: &mut egui::Ui) {
-        let (etiqueta, texto) = if self.ocupado {
+        let (etiqueta, acento, texto) = if self.ocupado {
             match self.calcular_metricas() {
-                Some(m) => ("En vivo", m.texto()),
-                None => ("En vivo", "Recolectando datos...".to_string()),
+                Some(m) => ("EN VIVO", VERDE, m.texto()),
+                None => ("EN VIVO", VERDE, "Recolectando datos...".to_string()),
             }
         } else if let Some(m) = &self.ultima_sesion {
-            ("Última sesión", m.texto())
+            ("ÚLTIMA SESIÓN", AZUL, m.texto())
         } else {
             return;
         };
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong(etiqueta);
-            ui.label(texto);
-        });
+        ui.add_space(10.0);
+        egui::Frame::new()
+            .fill(TARJETA_BG)
+            .stroke(egui::Stroke::new(1.2, acento.gamma_multiply(0.55)))
+            .corner_radius(10.0)
+            .shadow(sombra_tarjeta())
+            .inner_margin(egui::Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(etiqueta).small().strong().color(acento.gamma_multiply(0.7)));
+                    ui.separator();
+                    ui.label(texto);
+                });
+            });
     }
 
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
@@ -555,6 +607,21 @@ impl PosturografoxApp {
     }
 }
 
+/// Tarjeta blanca con encabezado, usada para enmarcar cada gráfico principal
+/// (mismo lenguaje visual que `tarjeta`, pero pensada para contenido alto).
+fn tarjeta_plot(ui: &mut egui::Ui, titulo: &str, acento: Color32, alto: f32, contenido: impl FnOnce(&mut egui::Ui, f32)) {
+    egui::Frame::new()
+        .fill(TARJETA_BG)
+        .stroke(egui::Stroke::new(1.0, Color32::from_gray(224)))
+        .corner_radius(10.0)
+        .shadow(sombra_tarjeta())
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(titulo).small().strong().color(acento.gamma_multiply(0.7)));
+            contenido(ui, (alto - 26.0).max(50.0));
+        });
+}
+
 impl eframe::App for PosturografoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let eventos: Vec<EventoSerie> = match &self.conexion {
@@ -565,20 +632,35 @@ impl eframe::App for PosturografoxApp {
             self.procesar_evento(evento);
         }
 
-        egui::Panel::top("controles").show(ui, |ui| {
+        let fondo = |margen| egui::Frame::new().fill(LIENZO).inner_margin(margen);
+
+        egui::Panel::top("controles").frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             self.barra_controles(ui);
             self.panel_metricas(ui);
         });
 
-        egui::Panel::bottom("estado").show(ui, |ui| {
-            ui.label(&self.estado);
+        egui::Panel::bottom("estado").frame(fondo(egui::Margin::symmetric(14, 7))).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let color = if self.conexion.is_some() {
+                    VERDE
+                } else if self.estado.starts_with("Error") {
+                    CORAL
+                } else {
+                    Color32::from_gray(170)
+                };
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 4.0, color);
+                ui.label(&self.estado);
+            });
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
+        egui::CentralPanel::default().frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             let alto_total = ui.available_height();
-            self.plot_cop(ui, alto_total * 0.6);
-            ui.separator();
-            self.plot_tiempo(ui, alto_total * 0.35);
+            tarjeta_plot(ui, "CENTRO DE PRESIÓN (COP)", AZUL, alto_total * 0.62, |ui, alto| self.plot_cop(ui, alto));
+            ui.add_space(10.0);
+            tarjeta_plot(ui, "MOVIMIENTO EN EL TIEMPO", NARANJA, alto_total * 0.34, |ui, alto| {
+                self.plot_tiempo(ui, alto)
+            });
         });
 
         ui.ctx().request_repaint_after(Duration::from_millis(33));
