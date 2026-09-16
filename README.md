@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.jpeg" alt="Posturografox" width="320"></p>
+
 # Posturografox
 
 Interfaz PySide6 + pyqtgraph para un posturógrafo de 4 celdas de carga
@@ -22,6 +24,5 @@ El ESP32 imprime por serie, a 115200 baudios, líneas CSV `fd,fi,bd,bi`
 
 ## Releases
 
-Cada push a `main` genera automáticamente un build para Windows y Linux
-(ver Actions) y publica un release `<version>_<commit>` (ej. `0.1.0_a1b2c3d`).
-Un release "limpio" `vX.Y.Z` se genera al pushear un tag con ese nombre.
+Al pushear un tag `vX.Y.Z` se dispara el build para Windows y Linux
+(ver Actions) y se publica un release estable con ese nombre.
