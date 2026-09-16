@@ -1,0 +1,53 @@
+name: Build (Rust)
+
+on:
+  push:
+    branches: [rust-port]
+    paths: ["rust/**", ".github/workflows/build-rust.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            ext: ""
+          - os: windows-latest
+            platform: windows
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar libs del sistema (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev \
+            libxkbcommon-dev libwayland-dev libgl1-mesa-dev libudev-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Compilar
+        working-directory: rust
+        run: cargo build --release
+
+      - name: Empaquetar binario
+        shell: bash
+        working-directory: rust
+        run: |
+          mkdir -p out
+          cp "target/release/posturografox${{ matrix.ext }}" "out/posturografox-${{ matrix.platform }}${{ matrix.ext }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: posturografox-rust-${{ matrix.platform }}
+          path: rust/out/*
