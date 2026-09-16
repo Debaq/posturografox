@@ -1,4 +1,6 @@
 mod app;
+mod estabilometria;
+mod exportar;
 mod juego;
 mod serial_link;
 

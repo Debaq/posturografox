@@ -15,6 +15,8 @@ use std::time::Duration;
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
+use crate::estabilometria::{ajustar_elipse95, calcular_metricas, cociente_romberg, Condicion, MetricasBalance};
+use crate::exportar::exportar_csv;
 use crate::juego;
 use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
 
@@ -25,9 +27,6 @@ const MUESTRAS_TARA_SW: usize = 20;
 const DEBOUNCE_DETECCION: u32 = 5;
 const ESPACIADO_PUNTOS_DEFAULT: usize = 8;
 const ETIQUETAS: [&str; 4] = ["fd", "fi", "bd", "bi"];
-/// χ² al 95% con 2 grados de libertad: escala los semiejes de la elipse de
-/// confianza y su área (Prieto et al. 1996, métrica estándar en posturografía).
-const CHI2_95_2GL: f64 = 5.991_46;
 
 // ── Paleta: pasteles contrastantes sobre fondo claro (look clínico) ─────────
 const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML / conexión
@@ -68,92 +67,6 @@ fn tarjeta(ui: &mut egui::Ui, titulo: &str, acento: Color32, contenido: impl FnO
                 ui.horizontal(|ui| contenido(ui));
             });
         });
-}
-
-/// Métricas clásicas de estabilometría, calculadas sobre el trazo COP de una sesión.
-#[derive(Clone, Copy, Default)]
-struct MetricasBalance {
-    longitud_cm: f64,
-    area95_cm2: f64,
-    velocidad_media_cms: f64,
-    duracion_s: f64,
-}
-
-impl MetricasBalance {
-    fn texto(&self) -> String {
-        format!(
-            "Longitud: {:.1} cm · Área 95%: {:.1} cm² · Vel. media: {:.2} cm/s · Duración: {:.1} s",
-            self.longitud_cm, self.area95_cm2, self.velocidad_media_cms, self.duracion_s
-        )
-    }
-}
-
-/// Semiejes + ángulo de la elipse de confianza al 95% de una nube de puntos 2D,
-/// via descomposición espectral cerrada de la matriz de covarianza 2x2.
-struct Elipse {
-    centro: (f64, f64),
-    semi_mayor: f64,
-    semi_menor: f64,
-    angulo: f64,
-}
-
-fn ajustar_elipse95(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
-    let n = xs.len();
-    if n < 3 {
-        return None;
-    }
-    let nf = n as f64;
-    let media_x = xs.iter().sum::<f64>() / nf;
-    let media_y = ys.iter().sum::<f64>() / nf;
-
-    let (mut var_x, mut var_y, mut cov_xy) = (0.0, 0.0, 0.0);
-    for i in 0..n {
-        let dx = xs[i] - media_x;
-        let dy = ys[i] - media_y;
-        var_x += dx * dx;
-        var_y += dy * dy;
-        cov_xy += dx * dy;
-    }
-    let gl = nf - 1.0;
-    var_x /= gl;
-    var_y /= gl;
-    cov_xy /= gl;
-
-    let tr = var_x + var_y;
-    let det = var_x * var_y - cov_xy * cov_xy;
-    let disc = (tr * tr / 4.0 - det).max(0.0).sqrt();
-    let lambda1 = (tr / 2.0 + disc).max(0.0);
-    let lambda2 = (tr / 2.0 - disc).max(0.0);
-    let angulo = if cov_xy.abs() < 1e-9 && var_x >= var_y {
-        0.0
-    } else {
-        0.5 * (2.0 * cov_xy).atan2(var_x - var_y)
-    };
-
-    Some(Elipse {
-        centro: (media_x, media_y),
-        semi_mayor: (lambda1 * CHI2_95_2GL).sqrt(),
-        semi_menor: (lambda2 * CHI2_95_2GL).sqrt(),
-        angulo,
-    })
-}
-
-impl Elipse {
-    fn area(&self) -> f64 {
-        std::f64::consts::PI * self.semi_mayor * self.semi_menor
-    }
-
-    fn contorno(&self, segmentos: usize) -> Vec<[f64; 2]> {
-        let (cx, cy) = self.centro;
-        let (sin_a, cos_a) = self.angulo.sin_cos();
-        (0..=segmentos)
-            .map(|i| {
-                let t = i as f64 / segmentos as f64 * std::f64::consts::TAU;
-                let (ex, ey) = (self.semi_mayor * t.cos(), self.semi_menor * t.sin());
-                [cx + ex * cos_a - ey * sin_a, cy + ex * sin_a + ey * cos_a]
-            })
-            .collect()
-    }
 }
 
 /// Interpola en sRGB sin premultiplicar: `Color32` guarda alpha premultiplicado
@@ -206,8 +119,20 @@ pub struct PosturografoxApp {
     espaciado_puntos: usize,
     ultimo_ml: f64,
     ultimo_ap: f64,
+    ultimos_pct: [f64; 4], // % de carga por celda (fd,fi,bd,bi), para biofeedback en vivo
 
+    // Registro de sesión: sin límite mientras dura (a diferencia de los
+    // buffers de arriba, que son ventanas acotadas solo para dibujar).
+    sesion_actual: Vec<[f64; 3]>, // [t_s, cop_ml_cm, cop_ap_cm]
+    ultimo_registro: Vec<[f64; 3]>,
     ultima_sesion: Option<MetricasBalance>,
+    ultima_condicion: Condicion,
+
+    // Examen: identificación + condición (para el cociente de Romberg)
+    paciente: String,
+    condicion: Condicion,
+    metricas_oa: Option<MetricasBalance>,
+    metricas_oc: Option<MetricasBalance>,
 
     // Modo juego (ver src/juego.rs)
     modo_juego: bool,
@@ -245,8 +170,17 @@ impl Default for PosturografoxApp {
             espaciado_puntos: ESPACIADO_PUNTOS_DEFAULT,
             ultimo_ml: 0.0,
             ultimo_ap: 0.0,
+            ultimos_pct: [25.0; 4],
 
+            sesion_actual: Vec::new(),
+            ultimo_registro: Vec::new(),
             ultima_sesion: None,
+            ultima_condicion: Condicion::default(),
+
+            paciente: String::new(),
+            condicion: Condicion::default(),
+            metricas_oa: None,
+            metricas_oc: None,
 
             modo_juego: false,
             estado_juego: juego::EstadoJuego::default(),
@@ -305,36 +239,25 @@ impl PosturografoxApp {
         self.t_buf.clear();
         self.ml_buf.clear();
         self.ap_buf.clear();
+        self.sesion_actual.clear();
     }
 
-    /// Métricas clásicas de estabilometría sobre el trazo COP actual:
-    /// longitud del camino recorrido, área de la elipse de confianza al 95%
-    /// (Prieto et al. 1996) y velocidad media = longitud / duración.
-    fn calcular_metricas(&self) -> Option<MetricasBalance> {
-        let n = self.trazo_x.len();
-        if n < 3 {
-            return None;
+    /// Cierra la sesión en curso: calcula sus métricas, las guarda como
+    /// "última sesión" y también en el casillero de su condición (para el
+    /// cociente de Romberg), y se queda con una copia del registro crudo
+    /// completo para poder exportarlo a CSV.
+    fn cerrar_sesion(&mut self) {
+        let metricas = calcular_metricas(&self.sesion_actual);
+        self.ultima_sesion = metricas;
+        self.ultima_condicion = self.condicion;
+        if let Some(m) = metricas {
+            match self.condicion {
+                Condicion::OjosAbiertos => self.metricas_oa = Some(m),
+                Condicion::OjosCerrados => self.metricas_oc = Some(m),
+            }
         }
-        let xs: Vec<f64> = self.trazo_x.iter().copied().collect();
-        let ys: Vec<f64> = self.trazo_y.iter().copied().collect();
-
-        let mut longitud_cm = 0.0;
-        for i in 1..n {
-            let dx = xs[i] - xs[i - 1];
-            let dy = ys[i] - ys[i - 1];
-            longitud_cm += (dx * dx + dy * dy).sqrt();
-        }
-
-        let area95_cm2 = ajustar_elipse95(&xs, &ys).map_or(0.0, |e| e.area());
-        let duracion_s = self.t_buf.back().copied().unwrap_or(0.0) - self.t_buf.front().copied().unwrap_or(0.0);
-        let velocidad_media_cms = if duracion_s > 0.0 { longitud_cm / duracion_s } else { 0.0 };
-
-        Some(MetricasBalance {
-            longitud_cm,
-            area95_cm2,
-            velocidad_media_cms,
-            duracion_s,
-        })
+        self.ultimo_registro = std::mem::take(&mut self.sesion_actual);
+        self.reiniciar_sesion();
     }
 
     /// Detecta cuándo alguien sube o baja de la plataforma por la suma cruda.
@@ -362,8 +285,7 @@ impl PosturografoxApp {
             self.contador_arriba = 0;
             if self.ocupado && self.contador_abajo >= DEBOUNCE_DETECCION {
                 self.ocupado = false;
-                self.ultima_sesion = self.calcular_metricas();
-                self.reiniciar_sesion();
+                self.cerrar_sesion();
                 self.estado = "Plataforma libre: sesión reiniciada".to_string();
             }
         }
@@ -383,6 +305,9 @@ impl PosturografoxApp {
         } else {
             let ml = ((vals[0] + vals[2]) - (vals[1] + vals[3])) / suma * (self.ancho_cm / 2.0);
             let ap = ((vals[0] + vals[1]) - (vals[2] + vals[3])) / suma * (self.prof_cm / 2.0);
+            for i in 0..4 {
+                self.ultimos_pct[i] = vals[i] / suma * 100.0;
+            }
             (ml, ap)
         };
 
@@ -392,6 +317,7 @@ impl PosturografoxApp {
             empujar_acotado(&mut self.t_buf, m.t, MAX_MUESTRAS_TIEMPO);
             empujar_acotado(&mut self.ml_buf, cop_ml, MAX_MUESTRAS_TIEMPO);
             empujar_acotado(&mut self.ap_buf, cop_ap, MAX_MUESTRAS_TIEMPO);
+            self.sesion_actual.push([m.t, cop_ml, cop_ap]);
         }
         self.ultimo_ml = cop_ml;
         self.ultimo_ap = cop_ap;
@@ -416,7 +342,7 @@ impl PosturografoxApp {
     fn barra_controles(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
 
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             let conectado = self.conexion.is_some();
 
             tarjeta(ui, "CONEXIÓN", AZUL, |ui| {
@@ -496,16 +422,60 @@ impl PosturografoxApp {
                 }
             });
         });
+
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            tarjeta(ui, "EXAMEN", LILA, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.paciente)
+                        .hint_text("Paciente / ID")
+                        .desired_width(140.0),
+                );
+                ui.radio_value(&mut self.condicion, Condicion::OjosAbiertos, "Ojos abiertos");
+                ui.radio_value(&mut self.condicion, Condicion::OjosCerrados, "Ojos cerrados");
+                let hay_datos = !self.ultimo_registro.is_empty();
+                if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
+                    self.exportar_sesion();
+                }
+            });
+
+            tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
+                for (i, etq) in ETIQUETAS.iter().enumerate() {
+                    ui.vertical(|ui| {
+                        ui.label(etq.to_uppercase());
+                        let pct = self.ultimos_pct[i].clamp(0.0, 100.0);
+                        ui.add(
+                            egui::ProgressBar::new((pct / 100.0) as f32)
+                                .desired_width(56.0)
+                                .text(format!("{pct:.0}%")),
+                        );
+                    });
+                }
+            });
+        });
+    }
+
+    fn exportar_sesion(&mut self) {
+        let Some(metricas) = self.ultima_sesion else {
+            self.estado = "No hay una sesión completa para exportar".to_string();
+            return;
+        };
+        match exportar_csv(&self.paciente, self.ultima_condicion, self.ancho_cm, self.prof_cm, &metricas, &self.ultimo_registro)
+        {
+            Ok(ruta) => self.estado = format!("Exportado: {}", ruta.display()),
+            Err(e) => self.estado = format!("Error al exportar: {e}"),
+        }
     }
 
     fn panel_metricas(&self, ui: &mut egui::Ui) {
         let (etiqueta, acento, texto) = if self.ocupado {
-            match self.calcular_metricas() {
+            match calcular_metricas(&self.sesion_actual) {
                 Some(m) => ("EN VIVO", VERDE, m.texto()),
                 None => ("EN VIVO", VERDE, "Recolectando datos...".to_string()),
             }
         } else if let Some(m) = &self.ultima_sesion {
-            ("ÚLTIMA SESIÓN", AZUL, m.texto())
+            ("ÚLTIMA SESIÓN", AZUL, format!("{} · {}", self.ultima_condicion.etiqueta(), m.texto()))
         } else {
             return;
         };
@@ -522,6 +492,18 @@ impl PosturografoxApp {
                     ui.separator();
                     ui.label(texto);
                 });
+                if let (Some(oa), Some(oc)) = (&self.metricas_oa, &self.metricas_oc) {
+                    if let Some(cociente) = cociente_romberg(oa, oc) {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("ROMBERG").small().strong().color(LILA.gamma_multiply(0.7)));
+                            ui.separator();
+                            ui.label(format!(
+                                "Área OC/OA: {cociente:.2}x (OA {:.1} cm² · OC {:.1} cm²)",
+                                oa.area95_cm2, oc.area95_cm2
+                            ));
+                        });
+                    }
+                }
             });
     }
 
@@ -703,50 +685,6 @@ impl eframe::App for PosturografoxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn elipse_de_puntos_alineados_en_x_no_gira() {
-        // Todo el sway es medio-lateral puro: el eje mayor debe quedar sobre X (ángulo 0)
-        let xs = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
-        let ys = vec![0.0, 0.0, 0.0, 0.0, 0.0];
-        let e = ajustar_elipse95(&xs, &ys).unwrap();
-        assert!(e.angulo.abs() < 1e-6, "ángulo esperado 0, dio {}", e.angulo);
-        assert!(e.semi_mayor > e.semi_menor);
-        assert!(e.semi_menor.abs() < 1e-6, "sin varianza en Y, semi-menor debe ser ~0");
-    }
-
-    #[test]
-    fn elipse_circular_no_favorece_ningun_eje() {
-        // Nube simétrica en ambos ejes: los semiejes deben salir prácticamente iguales
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        for i in 0..360 {
-            let t = (i as f64).to_radians();
-            xs.push(t.cos());
-            ys.push(t.sin());
-        }
-        let e = ajustar_elipse95(&xs, &ys).unwrap();
-        assert!((e.semi_mayor - e.semi_menor).abs() < 1e-3, "mayor={} menor={}", e.semi_mayor, e.semi_menor);
-    }
-
-    #[test]
-    fn menos_de_tres_puntos_no_ajusta_elipse() {
-        assert!(ajustar_elipse95(&[0.0, 1.0], &[0.0, 1.0]).is_none());
-    }
-
-    #[test]
-    fn longitud_de_camino_recto_es_la_distancia_esperada() {
-        // Path recto de 3 tramos de 1cm en X: longitud total = 3cm exactos
-        let xs: [f64; 4] = [0.0, 1.0, 2.0, 3.0];
-        let ys: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
-        let mut longitud: f64 = 0.0;
-        for i in 1..xs.len() {
-            let dx = xs[i] - xs[i - 1];
-            let dy = ys[i] - ys[i - 1];
-            longitud += (dx * dx + dy * dy).sqrt();
-        }
-        assert!((longitud - 3.0).abs() < 1e-9);
-    }
 
     #[test]
     fn lerp_color_en_extremos_devuelve_los_colores_originales() {
