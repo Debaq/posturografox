@@ -39,6 +39,14 @@ const GUIA: Color32 = Color32::from_gray(180); // líneas de referencia en 0,0
 const ROSA_JUEGO: Color32 = Color32::from_rgb(214, 130, 176); // acento del modo juego
 const AMARILLO: Color32 = Color32::from_rgb(216, 186, 90); // acento del ejercicio de límites de estabilidad
 
+/// Las 4 condiciones del CTSIB en el orden clásico en que se suelen tomar.
+const PASOS_CTSIB: [(Superficie, Condicion); 4] = [
+    (Superficie::Firme, Condicion::OjosAbiertos),
+    (Superficie::Firme, Condicion::OjosCerrados),
+    (Superficie::Espuma, Condicion::OjosAbiertos),
+    (Superficie::Espuma, Condicion::OjosCerrados),
+];
+
 // ── Superficies: fondo tipo "dashboard" + tarjetas blancas con sombra ───────
 const LIENZO: Color32 = Color32::from_rgb(235, 238, 242);
 const TARJETA_BG: Color32 = Color32::from_rgb(252, 253, 254);
@@ -262,10 +270,30 @@ impl PosturografoxApp {
         self.ultima_superficie = self.superficie;
         if let Some(m) = metricas {
             self.resultados_ctsib.insert((self.superficie, self.condicion), m);
+            self.avanzar_paso_ctsib();
         }
         self.ultimo_registro = std::mem::take(&mut self.sesion_actual);
         self.reiniciar_sesion();
         self.ejercicio.detener();
+    }
+
+    /// Salta a la siguiente condición del CTSIB que todavía no se corrió,
+    /// como el "objetivo siguiente" del ejercicio de límites: cierra una
+    /// sesión y ya queda listo el próximo paso, sin tocar nada a mano.
+    fn avanzar_paso_ctsib(&mut self) {
+        let actual = PASOS_CTSIB
+            .iter()
+            .position(|&(s, c)| s == self.superficie && c == self.condicion)
+            .unwrap_or(0);
+        for offset in 1..=PASOS_CTSIB.len() {
+            let (s, c) = PASOS_CTSIB[(actual + offset) % PASOS_CTSIB.len()];
+            if !self.resultados_ctsib.contains_key(&(s, c)) {
+                self.superficie = s;
+                self.condicion = c;
+                return;
+            }
+        }
+        // Las 4 condiciones ya están hechas: se queda donde está.
     }
 
     /// Detecta cuándo alguien sube o baja de la plataforma por la suma cruda.
@@ -437,33 +465,60 @@ impl PosturografoxApp {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            tarjeta(ui, "EXAMEN", LILA, |ui| {
+            tarjeta(ui, "PACIENTE", LILA, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.paciente)
                         .hint_text("Paciente / ID")
                         .desired_width(140.0),
                 );
-                ui.radio_value(&mut self.condicion, Condicion::OjosAbiertos, "Ojos abiertos");
-                ui.radio_value(&mut self.condicion, Condicion::OjosCerrados, "Ojos cerrados");
-                ui.separator();
-                ui.radio_value(&mut self.superficie, Superficie::Firme, "Firme");
-                ui.radio_value(&mut self.superficie, Superficie::Espuma, "Espuma");
                 let hay_datos = !self.ultimo_registro.is_empty();
                 if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
                     self.exportar_sesion();
                 }
             });
 
+            tarjeta(ui, "CTSIB", LILA, |ui| {
+                ui.label("ℹ").on_hover_text(
+                    "Examen guiado de 4 condiciones. Elegí un paso (o dejá el que está \
+                     marcado), parate en la plataforma unos segundos para esa condición \
+                     (se detecta solo y tara), y bajate para cerrarla: salta sola al \
+                     siguiente paso pendiente. El ✓ marca los pasos ya hechos. Los \
+                     cocientes Romberg/vestibular aparecen arriba del gráfico apenas \
+                     tengas los pares necesarios.",
+                );
+                for (i, &(sup, cond)) in PASOS_CTSIB.iter().enumerate() {
+                    let hecho = self.resultados_ctsib.contains_key(&(sup, cond));
+                    let activo = self.superficie == sup && self.condicion == cond;
+                    let marca = if hecho { "✓" } else { "○" };
+                    let etiqueta = format!("{marca} {}. {} + {}", i + 1, sup.etiqueta(), cond.etiqueta());
+                    if ui.selectable_label(activo, etiqueta).clicked() {
+                        self.superficie = sup;
+                        self.condicion = cond;
+                    }
+                }
+            });
+
             tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
-                for (i, etq) in ETIQUETAS.iter().enumerate() {
-                    ui.label(etq.to_uppercase());
-                    let pct = self.ultimos_pct[i].clamp(0.0, 100.0);
+                let barra = |ui: &mut egui::Ui, etq: &str, idx: usize| {
+                    ui.label(etq);
+                    let pct = self.ultimos_pct[idx].clamp(0.0, 100.0);
                     ui.add(
                         egui::ProgressBar::new((pct / 100.0) as f32)
                             .desired_width(56.0)
                             .text(format!("{pct:.0}%")),
                     );
-                }
+                };
+                // Grilla 2x2 como la plataforma real: frontal arriba, posterior abajo.
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        barra(ui, "FI", 1);
+                        barra(ui, "FD", 0);
+                    });
+                    ui.horizontal(|ui| {
+                        barra(ui, "BI", 3);
+                        barra(ui, "BD", 2);
+                    });
+                });
             });
 
             tarjeta(ui, "LÍMITES DE ESTABILIDAD", AMARILLO, |ui| {
