@@ -8,11 +8,12 @@
 //!   COP_ml (medio-lateral, + = derecha) = ((fd+bd)-(fi+bi))/suma * ancho/2
 //!   COP_ap (antero-posterior, + = frente) = ((fd+fi)-(bd+bi))/suma * profundidad/2
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use egui::Color32;
-use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, VLine};
+use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
 use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
 
@@ -23,6 +24,106 @@ const MUESTRAS_TARA_SW: usize = 20;
 const DEBOUNCE_DETECCION: u32 = 5;
 const ESPACIADO_PUNTOS_DEFAULT: usize = 8;
 const ETIQUETAS: [&str; 4] = ["fd", "fi", "bd", "bi"];
+/// χ² al 95% con 2 grados de libertad: escala los semiejes de la elipse de
+/// confianza y su área (Prieto et al. 1996, métrica estándar en posturografía).
+const CHI2_95_2GL: f64 = 5.991_46;
+
+/// Métricas clásicas de estabilometría, calculadas sobre el trazo COP de una sesión.
+#[derive(Clone, Copy, Default)]
+struct MetricasBalance {
+    longitud_cm: f64,
+    area95_cm2: f64,
+    velocidad_media_cms: f64,
+    duracion_s: f64,
+}
+
+impl MetricasBalance {
+    fn texto(&self) -> String {
+        format!(
+            "Longitud: {:.1} cm · Área 95%: {:.1} cm² · Vel. media: {:.2} cm/s · Duración: {:.1} s",
+            self.longitud_cm, self.area95_cm2, self.velocidad_media_cms, self.duracion_s
+        )
+    }
+}
+
+/// Semiejes + ángulo de la elipse de confianza al 95% de una nube de puntos 2D,
+/// via descomposición espectral cerrada de la matriz de covarianza 2x2.
+struct Elipse {
+    centro: (f64, f64),
+    semi_mayor: f64,
+    semi_menor: f64,
+    angulo: f64,
+}
+
+fn ajustar_elipse95(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
+    let n = xs.len();
+    if n < 3 {
+        return None;
+    }
+    let nf = n as f64;
+    let media_x = xs.iter().sum::<f64>() / nf;
+    let media_y = ys.iter().sum::<f64>() / nf;
+
+    let (mut var_x, mut var_y, mut cov_xy) = (0.0, 0.0, 0.0);
+    for i in 0..n {
+        let dx = xs[i] - media_x;
+        let dy = ys[i] - media_y;
+        var_x += dx * dx;
+        var_y += dy * dy;
+        cov_xy += dx * dy;
+    }
+    let gl = nf - 1.0;
+    var_x /= gl;
+    var_y /= gl;
+    cov_xy /= gl;
+
+    let tr = var_x + var_y;
+    let det = var_x * var_y - cov_xy * cov_xy;
+    let disc = (tr * tr / 4.0 - det).max(0.0).sqrt();
+    let lambda1 = (tr / 2.0 + disc).max(0.0);
+    let lambda2 = (tr / 2.0 - disc).max(0.0);
+    let angulo = if cov_xy.abs() < 1e-9 && var_x >= var_y {
+        0.0
+    } else {
+        0.5 * (2.0 * cov_xy).atan2(var_x - var_y)
+    };
+
+    Some(Elipse {
+        centro: (media_x, media_y),
+        semi_mayor: (lambda1 * CHI2_95_2GL).sqrt(),
+        semi_menor: (lambda2 * CHI2_95_2GL).sqrt(),
+        angulo,
+    })
+}
+
+impl Elipse {
+    fn area(&self) -> f64 {
+        std::f64::consts::PI * self.semi_mayor * self.semi_menor
+    }
+
+    fn contorno(&self, segmentos: usize) -> Vec<[f64; 2]> {
+        let (cx, cy) = self.centro;
+        let (sin_a, cos_a) = self.angulo.sin_cos();
+        (0..=segmentos)
+            .map(|i| {
+                let t = i as f64 / segmentos as f64 * std::f64::consts::TAU;
+                let (ex, ey) = (self.semi_mayor * t.cos(), self.semi_menor * t.sin());
+                [cx + ex * cos_a - ey * sin_a, cy + ex * sin_a + ey * cos_a]
+            })
+            .collect()
+    }
+}
+
+/// Interpola en sRGB sin premultiplicar: `Color32` guarda alpha premultiplicado
+/// internamente, así que interpolar `.r()/.g()/.b()` directo daría un degradé
+/// incorrecto (mezclaría color y opacidad). `to_srgba_unmultiplied` separa ambos.
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let [ar, ag, ab, aa] = a.to_srgba_unmultiplied();
+    let [br, bg, bb, ba] = b.to_srgba_unmultiplied();
+    let ch = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color32::from_rgba_unmultiplied(ch(ar, br), ch(ag, bg), ch(ab, bb), ch(aa, ba))
+}
 
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
     buf.push_back(valor);
@@ -63,6 +164,8 @@ pub struct PosturografoxApp {
     espaciado_puntos: usize,
     ultimo_ml: f64,
     ultimo_ap: f64,
+
+    ultima_sesion: Option<MetricasBalance>,
 }
 
 impl Default for PosturografoxApp {
@@ -96,6 +199,8 @@ impl Default for PosturografoxApp {
             espaciado_puntos: ESPACIADO_PUNTOS_DEFAULT,
             ultimo_ml: 0.0,
             ultimo_ap: 0.0,
+
+            ultima_sesion: None,
         }
     }
 }
@@ -153,6 +258,36 @@ impl PosturografoxApp {
         self.ap_buf.clear();
     }
 
+    /// Métricas clásicas de estabilometría sobre el trazo COP actual:
+    /// longitud del camino recorrido, área de la elipse de confianza al 95%
+    /// (Prieto et al. 1996) y velocidad media = longitud / duración.
+    fn calcular_metricas(&self) -> Option<MetricasBalance> {
+        let n = self.trazo_x.len();
+        if n < 3 {
+            return None;
+        }
+        let xs: Vec<f64> = self.trazo_x.iter().copied().collect();
+        let ys: Vec<f64> = self.trazo_y.iter().copied().collect();
+
+        let mut longitud_cm = 0.0;
+        for i in 1..n {
+            let dx = xs[i] - xs[i - 1];
+            let dy = ys[i] - ys[i - 1];
+            longitud_cm += (dx * dx + dy * dy).sqrt();
+        }
+
+        let area95_cm2 = ajustar_elipse95(&xs, &ys).map_or(0.0, |e| e.area());
+        let duracion_s = self.t_buf.back().copied().unwrap_or(0.0) - self.t_buf.front().copied().unwrap_or(0.0);
+        let velocidad_media_cms = if duracion_s > 0.0 { longitud_cm / duracion_s } else { 0.0 };
+
+        Some(MetricasBalance {
+            longitud_cm,
+            area95_cm2,
+            velocidad_media_cms,
+            duracion_s,
+        })
+    }
+
     /// Detecta cuándo alguien sube o baja de la plataforma por la suma cruda.
     /// Al subir: tara automática (solo con muestras ya cargadas, sin mezclar
     /// con las de plataforma vacía) + sesión nueva. Al bajar: sesión nueva,
@@ -178,6 +313,7 @@ impl PosturografoxApp {
             self.contador_arriba = 0;
             if self.ocupado && self.contador_abajo >= DEBOUNCE_DETECCION {
                 self.ocupado = false;
+                self.ultima_sesion = self.calcular_metricas();
                 self.reiniciar_sesion();
                 self.estado = "Plataforma libre: sesión reiniciada".to_string();
             }
@@ -297,21 +433,50 @@ impl PosturografoxApp {
         });
     }
 
+    fn panel_metricas(&self, ui: &mut egui::Ui) {
+        let (etiqueta, texto) = if self.ocupado {
+            match self.calcular_metricas() {
+                Some(m) => ("En vivo", m.texto()),
+                None => ("En vivo", "Recolectando datos...".to_string()),
+            }
+        } else if let Some(m) = &self.ultima_sesion {
+            ("Última sesión", m.texto())
+        } else {
+            return;
+        };
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong(etiqueta);
+            ui.label(texto);
+        });
+    }
+
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
         let margen = 1.2;
         let x_lim = self.ancho_cm / 2.0 * margen;
         let y_lim = self.prof_cm / 2.0 * margen;
 
-        let trazo: PlotPoints = self.trazo_x.iter().zip(self.trazo_y.iter()).map(|(&x, &y)| [x, y]).collect();
-        let paso = self.espaciado_puntos.max(1);
-        let puntos: PlotPoints = self
-            .trazo_x
+        let xs: Vec<f64> = self.trazo_x.iter().copied().collect();
+        let ys: Vec<f64> = self.trazo_y.iter().copied().collect();
+        let n = xs.len();
+
+        // Color por antigüedad: cola desvanecida -> cabeza (más reciente) saturada,
+        // como un "cometa" que deja ver hacia dónde se mueve el COP ahora mismo.
+        let color_vieja = Color32::from_rgba_unmultiplied(0, 150, 255, 25);
+        let color_nueva = Color32::from_rgb(0, 150, 255);
+        let fraccion: HashMap<(u64, u64), f32> = xs
             .iter()
-            .zip(self.trazo_y.iter())
-            .step_by(paso)
-            .map(|(&x, &y)| [x, y])
+            .zip(ys.iter())
+            .enumerate()
+            .map(|(i, (&x, &y))| ((x.to_bits(), y.to_bits()), i as f32 / n.max(1) as f32))
             .collect();
+        let fraccion = Arc::new(fraccion);
+
+        let trazo: PlotPoints = xs.iter().zip(ys.iter()).map(|(&x, &y)| [x, y]).collect();
+        let paso = self.espaciado_puntos.max(1);
+        let puntos: PlotPoints = xs.iter().zip(ys.iter()).step_by(paso).map(|(&x, &y)| [x, y]).collect();
         let actual: PlotPoints = vec![[self.ultimo_ml, self.ultimo_ap]].into();
+        let elipse = ajustar_elipse95(&xs, &ys);
 
         Plot::new("plot_cop")
             .height(altura)
@@ -323,7 +488,27 @@ impl PosturografoxApp {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([-x_lim, -y_lim], [x_lim, y_lim]));
                 plot_ui.hline(HLine::new("", 0.0).color(Color32::from_gray(140)));
                 plot_ui.vline(VLine::new("", 0.0).color(Color32::from_gray(140)));
-                plot_ui.line(Line::new("Trazo", trazo).color(Color32::from_rgb(0, 150, 255)).width(1.5));
+
+                if let Some(e) = &elipse {
+                    let contorno: PlotPoints = e.contorno(64).into();
+                    plot_ui.polygon(
+                        Polygon::new("Elipse 95%", contorno)
+                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 150, 255, 150)))
+                            .fill_color(Color32::from_rgba_unmultiplied(0, 150, 255, 20)),
+                    );
+                }
+
+                plot_ui.line(
+                    Line::new("Trazo", trazo)
+                        .width(1.5)
+                        .gradient_color(
+                            Arc::new(move |p: PlotPoint| {
+                                let t = fraccion.get(&(p.x.to_bits(), p.y.to_bits())).copied().unwrap_or(1.0);
+                                lerp_color(color_vieja, color_nueva, t)
+                            }),
+                            false,
+                        ),
+                );
                 plot_ui.points(
                     Points::new("", puntos)
                         .color(Color32::from_rgba_unmultiplied(0, 150, 255, 180))
@@ -375,6 +560,7 @@ impl eframe::App for PosturografoxApp {
 
         egui::Panel::top("controles").show(ui, |ui| {
             self.barra_controles(ui);
+            self.panel_metricas(ui);
         });
 
         egui::Panel::bottom("estado").show(ui, |ui| {
@@ -389,5 +575,62 @@ impl eframe::App for PosturografoxApp {
         });
 
         ui.ctx().request_repaint_after(Duration::from_millis(33));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elipse_de_puntos_alineados_en_x_no_gira() {
+        // Todo el sway es medio-lateral puro: el eje mayor debe quedar sobre X (ángulo 0)
+        let xs = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
+        let ys = vec![0.0, 0.0, 0.0, 0.0, 0.0];
+        let e = ajustar_elipse95(&xs, &ys).unwrap();
+        assert!(e.angulo.abs() < 1e-6, "ángulo esperado 0, dio {}", e.angulo);
+        assert!(e.semi_mayor > e.semi_menor);
+        assert!(e.semi_menor.abs() < 1e-6, "sin varianza en Y, semi-menor debe ser ~0");
+    }
+
+    #[test]
+    fn elipse_circular_no_favorece_ningun_eje() {
+        // Nube simétrica en ambos ejes: los semiejes deben salir prácticamente iguales
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for i in 0..360 {
+            let t = (i as f64).to_radians();
+            xs.push(t.cos());
+            ys.push(t.sin());
+        }
+        let e = ajustar_elipse95(&xs, &ys).unwrap();
+        assert!((e.semi_mayor - e.semi_menor).abs() < 1e-3, "mayor={} menor={}", e.semi_mayor, e.semi_menor);
+    }
+
+    #[test]
+    fn menos_de_tres_puntos_no_ajusta_elipse() {
+        assert!(ajustar_elipse95(&[0.0, 1.0], &[0.0, 1.0]).is_none());
+    }
+
+    #[test]
+    fn longitud_de_camino_recto_es_la_distancia_esperada() {
+        // Path recto de 3 tramos de 1cm en X: longitud total = 3cm exactos
+        let xs: [f64; 4] = [0.0, 1.0, 2.0, 3.0];
+        let ys: [f64; 4] = [0.0, 0.0, 0.0, 0.0];
+        let mut longitud: f64 = 0.0;
+        for i in 1..xs.len() {
+            let dx = xs[i] - xs[i - 1];
+            let dy = ys[i] - ys[i - 1];
+            longitud += (dx * dx + dy * dy).sqrt();
+        }
+        assert!((longitud - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lerp_color_en_extremos_devuelve_los_colores_originales() {
+        let a = Color32::from_rgba_unmultiplied(0, 150, 255, 25);
+        let b = Color32::from_rgb(0, 150, 255);
+        assert_eq!(lerp_color(a, b, 0.0), a);
+        assert_eq!(lerp_color(a, b, 1.0), b);
     }
 }
