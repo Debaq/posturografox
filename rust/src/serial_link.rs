@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use serialport::{SerialPort, SerialPortType};
 
-const BAUDIOS: u32 = 115_200;
+pub(crate) const BAUDIOS: u32 = 115_200;
 
 #[derive(Debug, Clone)]
 pub struct Muestra {

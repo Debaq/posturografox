@@ -23,6 +23,7 @@
     c  -> alterna entre cuentas crudas y valores calibrados
     s  -> resincroniza los 4 HX711
     f  -> muestra la frecuencia de muestreo medida
+    i  -> imprime el saludo de identificación (para autodetección del puerto)
 */
 
 #include <Arduino.h>
@@ -69,6 +70,7 @@
 
 // =================== CONFIGURACIÓN ===================
 #define BAUDIOS          115200
+#define ID_FIRMWARE      "POSTUROGRAFOX,1"  // saludo de identificación (comando 'i' o al arrancar)
 #define N_TARA           20     // lecturas promediadas para la tara
 #define PULSOS_EXTRA     1      // 1 = canal A ganancia 128 | 3 = canal A ganancia 64 | 2 = canal B ganancia 32
 #define IMPRIMIR_CRUDO   0      // 1 = cuentas crudas al inicio, 0 = valores calibrados
@@ -185,6 +187,13 @@ void imprimirEncabezado() {
   Serial.printf("%s,%s,%s,%s\n", ETQ[0], ETQ[1], ETQ[2], ETQ[3]);
 }
 
+// Saludo de identificación: permite que el host distinga este dispositivo
+// de cualquier otro puerto serie al buscar a qué puerto conectarse solo.
+void imprimirIdentificacion() {
+  Serial.print("# ");
+  Serial.println(ID_FIRMWARE);
+}
+
 void reiniciarConteo() {
   inicioConteo = millis();
   muestrasConteo = 0;
@@ -218,6 +227,9 @@ void revisarComandos() {
                       hz, VELOCIDAD_80SPS ? 80 : 10);
         break;
       }
+      case 'i': case 'I':
+        imprimirIdentificacion();
+        break;
       default:
         break;
     }
@@ -227,6 +239,7 @@ void revisarComandos() {
 void setup() {
   Serial.begin(BAUDIOS);
   delay(1500);                     // tiempo para abrir el monitor serie (USB CDC nativo del C3)
+  imprimirIdentificacion();        // primero que nada: para que el host la vea aunque escuche poco
 
   #if PIN_HX_RATE >= 0
     pinMode(PIN_HX_RATE, OUTPUT);

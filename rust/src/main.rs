@@ -1,4 +1,5 @@
 mod app;
+mod descubrimiento;
 mod estabilometria;
 mod exportar;
 mod juego;

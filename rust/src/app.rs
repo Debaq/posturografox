@@ -9,7 +9,7 @@
 //!   COP_ap (antero-posterior, + = frente) = ((fd+fi)-(bd+bi))/suma * profundidad/2
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use egui::Color32;
@@ -18,6 +18,7 @@ use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, P
 use crate::estabilometria::{ajustar_elipse95, calcular_metricas, cociente_area, Condicion, MetricasBalance, Superficie};
 use crate::limites;
 use crate::exportar::exportar_csv;
+use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::juego;
 use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
 
@@ -103,6 +104,8 @@ pub struct PosturografoxApp {
     puerto_seleccionado: Option<String>,
     conexion: Option<ConexionSerie>,
     estado: String,
+    // Búsqueda automática del puerto al arrancar (ver src/descubrimiento.rs)
+    descubrimiento: Option<mpsc::Receiver<EventoDescubrimiento>>,
 
     // Calibración: offset (tara por software) y ganancia por canal (fd,fi,bd,bi)
     offset: [f64; 4],
@@ -165,7 +168,8 @@ impl Default for PosturografoxApp {
             puertos,
             puerto_seleccionado,
             conexion: None,
-            estado: "Desconectado".to_string(),
+            estado: "Buscando posturógrafo...".to_string(),
+            descubrimiento: Some(descubrimiento::iniciar()),
 
             offset: [0.0; 4],
             ganancia: [1.0; 4],
@@ -406,6 +410,14 @@ impl PosturografoxApp {
                 }
                 if ui.button(if conectado { "Desconectar" } else { "Conectar" }).clicked() {
                     self.alternar_conexion();
+                }
+                if ui
+                    .add_enabled(!conectado, egui::Button::new("🔍 Buscar"))
+                    .on_hover_text("Probar los puertos USB hasta encontrar el posturógrafo")
+                    .clicked()
+                {
+                    self.estado = "Buscando posturógrafo...".to_string();
+                    self.descubrimiento = Some(descubrimiento::iniciar());
                 }
             });
 
@@ -799,6 +811,25 @@ impl eframe::App for PosturografoxApp {
         };
         for evento in eventos {
             self.procesar_evento(evento);
+        }
+
+        if let Some(rx) = &self.descubrimiento {
+            if let Ok(evento) = rx.try_recv() {
+                match evento {
+                    EventoDescubrimiento::Encontrado(puerto) => {
+                        if self.conexion.is_none() {
+                            self.puerto_seleccionado = Some(puerto);
+                            self.alternar_conexion();
+                        }
+                    }
+                    EventoDescubrimiento::Terminado => {
+                        if self.conexion.is_none() {
+                            self.estado = "No se encontró el posturógrafo: elegí el puerto a mano".to_string();
+                        }
+                    }
+                }
+                self.descubrimiento = None;
+            }
         }
 
         if self.modo_juego {
