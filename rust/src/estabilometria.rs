@@ -1,15 +1,15 @@
 //! Matemática de estabilometría: elipse de confianza 95%, métricas clásicas
-//! de sway (longitud, área, velocidad, RMS, rango) y cociente de Romberg.
-//! Todo pensado como funciones puras sobre datos crudos (sin depender de
-//! `PosturografoxApp`) para que sea fácil de testear y de reusar.
+//! de sway (longitud, área, velocidad, RMS, rango) y los cocientes del CTSIB
+//! (Clinical Test of Sensory Interaction on Balance). Todo pensado como
+//! funciones puras sobre datos crudos (sin depender de `PosturografoxApp`)
+//! para que sea fácil de testear y de reusar.
 
 /// χ² al 95% con 2 grados de libertad: escala los semiejes de la elipse de
 /// confianza y su área (Prieto et al. 1996, métrica estándar en posturografía).
 const CHI2_95_2GL: f64 = 5.991_46;
 
-/// Condición del examen (para el cociente de Romberg: compara sway con ojos
-/// abiertos vs. cerrados, midiendo cuánto aporta la visión al equilibrio).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Condición visual del examen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Condicion {
     #[default]
     OjosAbiertos,
@@ -28,6 +28,32 @@ impl Condicion {
         match self {
             Condicion::OjosAbiertos => "ojos_abiertos",
             Condicion::OjosCerrados => "ojos_cerrados",
+        }
+    }
+}
+
+/// Superficie de apoyo del examen (firme = piso normal, espuma = colchoneta
+/// que quita referencia propioceptiva precisa). Junto con `Condicion` arma
+/// las 4 condiciones del CTSIB.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Superficie {
+    #[default]
+    Firme,
+    Espuma,
+}
+
+impl Superficie {
+    pub fn etiqueta(&self) -> &'static str {
+        match self {
+            Superficie::Firme => "Firme",
+            Superficie::Espuma => "Espuma",
+        }
+    }
+
+    pub fn slug(&self) -> &'static str {
+        match self {
+            Superficie::Firme => "firme",
+            Superficie::Espuma => "espuma",
         }
     }
 }
@@ -107,11 +133,15 @@ pub fn calcular_metricas(muestras: &[[f64; 3]]) -> Option<MetricasBalance> {
     })
 }
 
-/// Cociente de Romberg por área (OC/OA): cuánto crece el sway al cerrar los
-/// ojos. ~1.0 = la visión no aportó; valores altos = dependencia visual fuerte.
-pub fn cociente_romberg(ojos_abiertos: &MetricasBalance, ojos_cerrados: &MetricasBalance) -> Option<f64> {
-    if ojos_abiertos.area95_cm2 > 0.0 {
-        Some(ojos_cerrados.area95_cm2 / ojos_abiertos.area95_cm2)
+/// Cociente de área entre dos condiciones (`comparado`/`base`): cuánto crece
+/// el sway al pasar de una a otra. ~1.0 = sin cambio; valores altos = esa
+/// condición exige mucho más al sistema de equilibrio. Sirve tanto para el
+/// cociente de Romberg clásico (base=ojos abiertos, comparado=ojos cerrados,
+/// misma superficie) como para comparar superficies o el "ratio vestibular"
+/// del CTSIB completo (base=firme+ojos abiertos, comparado=espuma+ojos cerrados).
+pub fn cociente_area(base: &MetricasBalance, comparado: &MetricasBalance) -> Option<f64> {
+    if base.area95_cm2 > 0.0 {
+        Some(comparado.area95_cm2 / base.area95_cm2)
     } else {
         None
     }
@@ -249,16 +279,16 @@ mod tests {
     }
 
     #[test]
-    fn romberg_mayor_a_uno_cuando_empeora_con_ojos_cerrados() {
+    fn cociente_area_mayor_a_uno_cuando_empeora_la_condicion_comparada() {
         let oa = MetricasBalance { area95_cm2: 2.0, ..Default::default() };
         let oc = MetricasBalance { area95_cm2: 6.0, ..Default::default() };
-        assert!((cociente_romberg(&oa, &oc).unwrap() - 3.0).abs() < 1e-9);
+        assert!((cociente_area(&oa, &oc).unwrap() - 3.0).abs() < 1e-9);
     }
 
     #[test]
-    fn romberg_none_si_area_ojos_abiertos_es_cero() {
+    fn cociente_area_none_si_la_base_tiene_area_cero() {
         let oa = MetricasBalance::default();
         let oc = MetricasBalance { area95_cm2: 1.0, ..Default::default() };
-        assert!(cociente_romberg(&oa, &oc).is_none());
+        assert!(cociente_area(&oa, &oc).is_none());
     }
 }

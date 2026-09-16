@@ -2,6 +2,7 @@ mod app;
 mod estabilometria;
 mod exportar;
 mod juego;
+mod limites;
 mod serial_link;
 
 fn cargar_icono() -> egui::IconData {

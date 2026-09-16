@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::estabilometria::{Condicion, MetricasBalance};
+use crate::estabilometria::{Condicion, MetricasBalance, Superficie};
 
 const CARPETA_SESIONES: &str = "sesiones";
 
@@ -23,11 +23,12 @@ fn sanitizar(texto: &str) -> String {
     }
 }
 
-/// Escribe `sesiones/sesion_<paciente>_<condicion>_<epoch>.csv` (relativo al
-/// directorio de trabajo) y devuelve la ruta final.
+/// Escribe `sesiones/sesion_<paciente>_<superficie>_<condicion>_<epoch>.csv`
+/// (relativo al directorio de trabajo) y devuelve la ruta final.
 pub fn exportar_csv(
     paciente: &str,
     condicion: Condicion,
+    superficie: Superficie,
     ancho_cm: f64,
     prof_cm: f64,
     metricas: &MetricasBalance,
@@ -36,13 +37,15 @@ pub fn exportar_csv(
     fs::create_dir_all(CARPETA_SESIONES)?;
 
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let nombre = format!("sesion_{}_{}_{}.csv", sanitizar(paciente), condicion.slug(), epoch);
+    let nombre =
+        format!("sesion_{}_{}_{}_{}.csv", sanitizar(paciente), superficie.slug(), condicion.slug(), epoch);
     let ruta = PathBuf::from(CARPETA_SESIONES).join(nombre);
 
     let mut archivo = fs::File::create(&ruta)?;
     writeln!(archivo, "# Posturografox - registro de sesión")?;
     writeln!(archivo, "# paciente: {}", paciente.trim())?;
     writeln!(archivo, "# condicion: {}", condicion.etiqueta())?;
+    writeln!(archivo, "# superficie: {}", superficie.etiqueta())?;
     writeln!(archivo, "# epoch_unix_s: {epoch}")?;
     writeln!(archivo, "# ancho_cm: {ancho_cm:.2}")?;
     writeln!(archivo, "# profundidad_cm: {prof_cm:.2}")?;
@@ -87,15 +90,17 @@ mod tests {
         };
         let registro = [[0.0, 0.0, 0.0], [0.5, 0.1, -0.1], [1.0, 0.2, -0.2]];
 
-        let ruta = exportar_csv("Test Paciente", Condicion::OjosCerrados, 40.0, 40.0, &metricas, &registro)
-            .expect("exportar_csv no debería fallar");
+        let ruta =
+            exportar_csv("Test Paciente", Condicion::OjosCerrados, Superficie::Espuma, 40.0, 40.0, &metricas, &registro)
+                .expect("exportar_csv no debería fallar");
 
         let contenido = fs::read_to_string(&ruta).expect("el archivo debe existir y ser legible");
         assert!(contenido.contains("# paciente: Test Paciente"));
         assert!(contenido.contains("# condicion: Ojos cerrados"));
+        assert!(contenido.contains("# superficie: Espuma"));
         assert!(contenido.contains("t_s,cop_ml_cm,cop_ap_cm"));
         assert!(contenido.contains("0.5000,0.1000,-0.1000"));
-        assert_eq!(contenido.lines().count(), 18, "14 líneas de metadata + encabezado + 3 filas");
+        assert_eq!(contenido.lines().count(), 19, "15 líneas de metadata + encabezado + 3 filas");
 
         fs::remove_file(&ruta).ok();
     }

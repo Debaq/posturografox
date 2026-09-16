@@ -15,7 +15,8 @@ use std::time::Duration;
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
-use crate::estabilometria::{ajustar_elipse95, calcular_metricas, cociente_romberg, Condicion, MetricasBalance};
+use crate::estabilometria::{ajustar_elipse95, calcular_metricas, cociente_area, Condicion, MetricasBalance, Superficie};
+use crate::limites;
 use crate::exportar::exportar_csv;
 use crate::juego;
 use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
@@ -36,6 +37,7 @@ const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 9
 const VERDE: Color32 = Color32::from_rgb(120, 178, 140); // plataforma / calibración
 const GUIA: Color32 = Color32::from_gray(180); // líneas de referencia en 0,0
 const ROSA_JUEGO: Color32 = Color32::from_rgb(214, 130, 176); // acento del modo juego
+const AMARILLO: Color32 = Color32::from_rgb(216, 186, 90); // acento del ejercicio de límites de estabilidad
 
 // ── Superficies: fondo tipo "dashboard" + tarjetas blancas con sombra ───────
 const LIENZO: Color32 = Color32::from_rgb(235, 238, 242);
@@ -127,12 +129,16 @@ pub struct PosturografoxApp {
     ultimo_registro: Vec<[f64; 3]>,
     ultima_sesion: Option<MetricasBalance>,
     ultima_condicion: Condicion,
+    ultima_superficie: Superficie,
 
-    // Examen: identificación + condición (para el cociente de Romberg)
+    // Examen: identificación + condición/superficie (CTSIB: las 4 combinaciones)
     paciente: String,
     condicion: Condicion,
-    metricas_oa: Option<MetricasBalance>,
-    metricas_oc: Option<MetricasBalance>,
+    superficie: Superficie,
+    resultados_ctsib: HashMap<(Superficie, Condicion), MetricasBalance>,
+
+    // Ejercicio de límites de estabilidad (ver src/limites.rs)
+    ejercicio: limites::EjercicioLimites,
 
     // Modo juego (ver src/juego.rs)
     modo_juego: bool,
@@ -176,11 +182,14 @@ impl Default for PosturografoxApp {
             ultimo_registro: Vec::new(),
             ultima_sesion: None,
             ultima_condicion: Condicion::default(),
+            ultima_superficie: Superficie::default(),
 
             paciente: String::new(),
             condicion: Condicion::default(),
-            metricas_oa: None,
-            metricas_oc: None,
+            superficie: Superficie::default(),
+            resultados_ctsib: HashMap::new(),
+
+            ejercicio: limites::EjercicioLimites::default(),
 
             modo_juego: false,
             estado_juego: juego::EstadoJuego::default(),
@@ -250,14 +259,13 @@ impl PosturografoxApp {
         let metricas = calcular_metricas(&self.sesion_actual);
         self.ultima_sesion = metricas;
         self.ultima_condicion = self.condicion;
+        self.ultima_superficie = self.superficie;
         if let Some(m) = metricas {
-            match self.condicion {
-                Condicion::OjosAbiertos => self.metricas_oa = Some(m),
-                Condicion::OjosCerrados => self.metricas_oc = Some(m),
-            }
+            self.resultados_ctsib.insert((self.superficie, self.condicion), m);
         }
         self.ultimo_registro = std::mem::take(&mut self.sesion_actual);
         self.reiniciar_sesion();
+        self.ejercicio.detener();
     }
 
     /// Detecta cuándo alguien sube o baja de la plataforma por la suma cruda.
@@ -434,6 +442,9 @@ impl PosturografoxApp {
                 );
                 ui.radio_value(&mut self.condicion, Condicion::OjosAbiertos, "Ojos abiertos");
                 ui.radio_value(&mut self.condicion, Condicion::OjosCerrados, "Ojos cerrados");
+                ui.separator();
+                ui.radio_value(&mut self.superficie, Superficie::Firme, "Firme");
+                ui.radio_value(&mut self.superficie, Superficie::Espuma, "Espuma");
                 let hay_datos = !self.ultimo_registro.is_empty();
                 if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
                     self.exportar_sesion();
@@ -453,6 +464,30 @@ impl PosturografoxApp {
                     });
                 }
             });
+
+            tarjeta(ui, "LÍMITES DE ESTABILIDAD", AMARILLO, |ui| {
+                if self.ejercicio.activo() {
+                    if self.ejercicio.completo() {
+                        if let Some(resumen) = self.ejercicio.resumen() {
+                            ui.label(resumen);
+                        }
+                        if ui.button("Reiniciar").clicked() {
+                            self.ejercicio.iniciar();
+                        }
+                    } else {
+                        ui.label(format!("Objetivo {}/{}", self.ejercicio.indice_actual() + 1, limites::DIRECCIONES));
+                        if ui.button("Detener").clicked() {
+                            self.ejercicio.detener();
+                        }
+                    }
+                } else if ui
+                    .add_enabled(self.ocupado, egui::Button::new("Iniciar ejercicio"))
+                    .on_hover_text("Parate en la plataforma primero")
+                    .clicked()
+                {
+                    self.ejercicio.iniciar();
+                }
+            });
         });
     }
 
@@ -461,8 +496,15 @@ impl PosturografoxApp {
             self.estado = "No hay una sesión completa para exportar".to_string();
             return;
         };
-        match exportar_csv(&self.paciente, self.ultima_condicion, self.ancho_cm, self.prof_cm, &metricas, &self.ultimo_registro)
-        {
+        match exportar_csv(
+            &self.paciente,
+            self.ultima_condicion,
+            self.ultima_superficie,
+            self.ancho_cm,
+            self.prof_cm,
+            &metricas,
+            &self.ultimo_registro,
+        ) {
             Ok(ruta) => self.estado = format!("Exportado: {}", ruta.display()),
             Err(e) => self.estado = format!("Error al exportar: {e}"),
         }
@@ -475,7 +517,11 @@ impl PosturografoxApp {
                 None => ("EN VIVO", VERDE, "Recolectando datos...".to_string()),
             }
         } else if let Some(m) = &self.ultima_sesion {
-            ("ÚLTIMA SESIÓN", AZUL, format!("{} · {}", self.ultima_condicion.etiqueta(), m.texto()))
+            (
+                "ÚLTIMA SESIÓN",
+                AZUL,
+                format!("{} · {} · {}", self.ultima_superficie.etiqueta(), self.ultima_condicion.etiqueta(), m.texto()),
+            )
         } else {
             return;
         };
@@ -492,19 +538,46 @@ impl PosturografoxApp {
                     ui.separator();
                     ui.label(texto);
                 });
-                if let (Some(oa), Some(oc)) = (&self.metricas_oa, &self.metricas_oc) {
-                    if let Some(cociente) = cociente_romberg(oa, oc) {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("ROMBERG").small().strong().color(LILA.gamma_multiply(0.7)));
-                            ui.separator();
-                            ui.label(format!(
-                                "Área OC/OA: {cociente:.2}x (OA {:.1} cm² · OC {:.1} cm²)",
-                                oa.area95_cm2, oc.area95_cm2
-                            ));
-                        });
-                    }
+                if let Some(resumen) = self.resumen_ctsib() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("CTSIB").small().strong().color(LILA.gamma_multiply(0.7)));
+                        ui.separator();
+                        ui.label(resumen);
+                    });
                 }
             });
+    }
+
+    /// Cocientes del CTSIB disponibles con las sesiones ya registradas: solo
+    /// se muestra cada uno cuando ambas condiciones que compara ya se corrieron.
+    fn resumen_ctsib(&self) -> Option<String> {
+        let buscar = |s, c| self.resultados_ctsib.get(&(s, c));
+        let firme_oa = buscar(Superficie::Firme, Condicion::OjosAbiertos);
+        let firme_oc = buscar(Superficie::Firme, Condicion::OjosCerrados);
+        let espuma_oa = buscar(Superficie::Espuma, Condicion::OjosAbiertos);
+        let espuma_oc = buscar(Superficie::Espuma, Condicion::OjosCerrados);
+
+        let mut partes = Vec::new();
+        if let (Some(a), Some(b)) = (firme_oa, firme_oc) {
+            if let Some(c) = cociente_area(a, b) {
+                partes.push(format!("Romberg firme {c:.2}x"));
+            }
+        }
+        if let (Some(a), Some(b)) = (espuma_oa, espuma_oc) {
+            if let Some(c) = cociente_area(a, b) {
+                partes.push(format!("Romberg espuma {c:.2}x"));
+            }
+        }
+        if let (Some(a), Some(b)) = (firme_oa, espuma_oc) {
+            if let Some(c) = cociente_area(a, b) {
+                partes.push(format!("Ratio vestibular {c:.2}x"));
+            }
+        }
+        if partes.is_empty() {
+            None
+        } else {
+            Some(partes.join(" · "))
+        }
     }
 
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
@@ -577,6 +650,24 @@ impl PosturografoxApp {
                         .radius(7.0)
                         .color(CORAL),
                 );
+
+                if let Some(obj) = self.ejercicio.objetivo_actual(self.ancho_cm, self.prof_cm) {
+                    let anillo: PlotPoints = vec![[obj.x, obj.y]].into();
+                    plot_ui.points(
+                        Points::new("Objetivo", anillo).shape(MarkerShape::Circle).filled(false).radius(12.0).color(AMARILLO),
+                    );
+                    let progreso = self.ejercicio.progreso_hold();
+                    if progreso > 0.0 {
+                        let relleno: PlotPoints = vec![[obj.x, obj.y]].into();
+                        plot_ui.points(
+                            Points::new("", relleno)
+                                .shape(MarkerShape::Circle)
+                                .filled(true)
+                                .radius(12.0 * progreso)
+                                .color(AMARILLO),
+                        );
+                    }
+                }
             });
     }
 
@@ -645,6 +736,11 @@ impl eframe::App for PosturografoxApp {
             });
             ui.ctx().request_repaint_after(Duration::from_millis(16));
             return;
+        }
+
+        if self.ocupado {
+            let dt = ui.input(|i| i.stable_dt);
+            self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, self.ancho_cm, self.prof_cm, dt);
         }
 
         let fondo = |margen| egui::Frame::new().fill(LIENZO).inner_margin(margen);
