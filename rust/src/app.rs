@@ -397,27 +397,34 @@ impl PosturografoxApp {
             let conectado = self.conexion.is_some();
 
             tarjeta(ui, "CONEXIÓN", AZUL, |ui| {
-                egui::ComboBox::from_id_salt("combo_puerto")
-                    .width(150.0)
-                    .selected_text(self.puerto_seleccionado.clone().unwrap_or_else(|| "Sin puerto".to_string()))
-                    .show_ui(ui, |ui| {
-                        for p in self.puertos.clone() {
-                            ui.selectable_value(&mut self.puerto_seleccionado, Some(p.clone()), p);
-                        }
-                    });
-                if ui.button("⟳").on_hover_text("Actualizar lista de puertos").clicked() {
-                    self.puertos = puertos_usables();
-                }
-                if ui.button(if conectado { "Desconectar" } else { "Conectar" }).clicked() {
-                    self.alternar_conexion();
-                }
-                if ui
-                    .add_enabled(!conectado, egui::Button::new("🔍 Buscar"))
-                    .on_hover_text("Probar los puertos USB hasta encontrar el posturógrafo")
-                    .clicked()
-                {
-                    self.estado = "Buscando posturógrafo...".to_string();
-                    self.descubrimiento = Some(descubrimiento::iniciar());
+                if conectado {
+                    ui.colored_label(VERDE, "🟢 Online");
+                    if ui.button("Desconectar").clicked() {
+                        self.alternar_conexion();
+                    }
+                } else {
+                    egui::ComboBox::from_id_salt("combo_puerto")
+                        .width(150.0)
+                        .selected_text(self.puerto_seleccionado.clone().unwrap_or_else(|| "Sin puerto".to_string()))
+                        .show_ui(ui, |ui| {
+                            for p in self.puertos.clone() {
+                                ui.selectable_value(&mut self.puerto_seleccionado, Some(p.clone()), p);
+                            }
+                        });
+                    if ui.button("⟳").on_hover_text("Actualizar lista de puertos").clicked() {
+                        self.puertos = puertos_usables();
+                    }
+                    if ui.button("Conectar").clicked() {
+                        self.alternar_conexion();
+                    }
+                    if ui
+                        .button("🔍 Buscar")
+                        .on_hover_text("Probar los puertos USB hasta encontrar el posturógrafo")
+                        .clicked()
+                    {
+                        self.estado = "Buscando posturógrafo...".to_string();
+                        self.descubrimiento = Some(descubrimiento::iniciar());
+                    }
                 }
             });
 
