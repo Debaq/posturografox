@@ -453,15 +453,13 @@ impl PosturografoxApp {
 
             tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
                 for (i, etq) in ETIQUETAS.iter().enumerate() {
-                    ui.vertical(|ui| {
-                        ui.label(etq.to_uppercase());
-                        let pct = self.ultimos_pct[i].clamp(0.0, 100.0);
-                        ui.add(
-                            egui::ProgressBar::new((pct / 100.0) as f32)
-                                .desired_width(56.0)
-                                .text(format!("{pct:.0}%")),
-                        );
-                    });
+                    ui.label(etq.to_uppercase());
+                    let pct = self.ultimos_pct[i].clamp(0.0, 100.0);
+                    ui.add(
+                        egui::ProgressBar::new((pct / 100.0) as f32)
+                            .desired_width(56.0)
+                            .text(format!("{pct:.0}%")),
+                    );
                 }
             });
 
