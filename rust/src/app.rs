@@ -506,7 +506,7 @@ impl PosturografoxApp {
                         }
                     }
 
-                    ui.separator();
+                    ui.add_space(4.0);
                     if self.ctsib_armado {
                         let estado = if self.ocupado { "grabando..." } else { "subite a la plataforma" };
                         ui.label(format!(
