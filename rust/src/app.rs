@@ -308,15 +308,18 @@ impl PosturografoxApp {
 
         let vals: [f64; 4] = std::array::from_fn(|i| (m.crudos[i] - self.offset[i]) * self.ganancia[i]);
         let suma: f64 = vals.iter().sum();
-        let (cop_ml, cop_ap) = if suma == 0.0 {
-            (0.0, 0.0)
-        } else {
+        // Con la plataforma vacía `suma` es puro ruido cerca de cero: dividir
+        // por eso amplifica cualquier ruidito a un COP que salta como loco.
+        // Solo calculamos el COP real mientras hay alguien parado (`ocupado`).
+        let (cop_ml, cop_ap) = if self.ocupado && suma != 0.0 {
             let ml = ((vals[0] + vals[2]) - (vals[1] + vals[3])) / suma * (self.ancho_cm / 2.0);
             let ap = ((vals[0] + vals[1]) - (vals[2] + vals[3])) / suma * (self.prof_cm / 2.0);
             for i in 0..4 {
                 self.ultimos_pct[i] = vals[i] / suma * 100.0;
             }
             (ml, ap)
+        } else {
+            (0.0, 0.0)
         };
 
         if self.ocupado {
