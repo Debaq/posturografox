@@ -51,6 +51,23 @@ DEBOUNCE_DETECCION = 5           # muestras consecutivas para confirmar subida/b
 ESPACIADO_PUNTOS_DEFAULT = 8     # 1 punto visible cada N muestras en el trazo COP
 
 
+def _puertos_usables():
+    """Puertos serie con un dispositivo USB real detrás.
+
+    Descarta los ttyS*/COM* "fantasma" que expone el chipset de la placa
+    (sin VID/PID, nunca tienen nada conectado) y los puertos Bluetooth
+    virtuales de Windows/macOS, que solo ensucian la lista.
+    """
+    usables = []
+    for p in list_ports.comports():
+        if p.vid is None:
+            continue
+        if "bluetooth" in (p.description or "").lower():
+            continue
+        usables.append(p)
+    return usables
+
+
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -269,11 +286,12 @@ class VentanaPrincipal(QMainWindow):
         self.plot_tiempo.setXRange(t_ultimo - VENTANA_TIEMPO_S, max(t_ultimo, VENTANA_TIEMPO_S), padding=0)
 
     def _refrescar_puertos(self) -> None:
-        actual = self.combo_puerto.currentText()
+        actual = self.combo_puerto.currentData()
         self.combo_puerto.clear()
-        for p in list_ports.comports():
-            self.combo_puerto.addItem(p.device)
-        i = self.combo_puerto.findText(actual)
+        for p in _puertos_usables():
+            etiqueta = p.device if not p.description or p.description == "n/a" else f"{p.device} — {p.description}"
+            self.combo_puerto.addItem(etiqueta, userData=p.device)
+        i = self.combo_puerto.findData(actual)
         if i >= 0:
             self.combo_puerto.setCurrentIndex(i)
 
@@ -282,7 +300,7 @@ class VentanaPrincipal(QMainWindow):
         if self.conexion.activa:
             self.conexion.desconectar()
         else:
-            puerto = self.combo_puerto.currentText()
+            puerto = self.combo_puerto.currentData()
             if not puerto:
                 self.statusBar().showMessage("Elegí un puerto primero")
                 return
