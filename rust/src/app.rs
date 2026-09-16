@@ -28,6 +28,13 @@ const ETIQUETAS: [&str; 4] = ["fd", "fi", "bd", "bi"];
 /// confianza y su área (Prieto et al. 1996, métrica estándar en posturografía).
 const CHI2_95_2GL: f64 = 5.991_46;
 
+// ── Paleta: pasteles contrastantes sobre fondo claro (look clínico) ─────────
+const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML
+const NARANJA: Color32 = Color32::from_rgb(240, 165, 100); // curva AP
+const CORAL: Color32 = Color32::from_rgb(222, 118, 112); // punto COP actual
+const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 95%
+const GUIA: Color32 = Color32::from_gray(180); // líneas de referencia en 0,0
+
 /// Métricas clásicas de estabilometría, calculadas sobre el trazo COP de una sesión.
 #[derive(Clone, Copy, Default)]
 struct MetricasBalance {
@@ -462,8 +469,8 @@ impl PosturografoxApp {
 
         // Color por antigüedad: cola desvanecida -> cabeza (más reciente) saturada,
         // como un "cometa" que deja ver hacia dónde se mueve el COP ahora mismo.
-        let color_vieja = Color32::from_rgba_unmultiplied(0, 150, 255, 25);
-        let color_nueva = Color32::from_rgb(0, 150, 255);
+        let color_vieja = Color32::from_rgba_unmultiplied(AZUL.r(), AZUL.g(), AZUL.b(), 25);
+        let color_nueva = AZUL;
         let fraccion: HashMap<(u64, u64), f32> = xs
             .iter()
             .zip(ys.iter())
@@ -486,15 +493,15 @@ impl PosturografoxApp {
             .allow_drag(false)
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max([-x_lim, -y_lim], [x_lim, y_lim]));
-                plot_ui.hline(HLine::new("", 0.0).color(Color32::from_gray(140)));
-                plot_ui.vline(VLine::new("", 0.0).color(Color32::from_gray(140)));
+                plot_ui.hline(HLine::new("", 0.0).color(GUIA));
+                plot_ui.vline(VLine::new("", 0.0).color(GUIA));
 
                 if let Some(e) = &elipse {
                     let contorno: PlotPoints = e.contorno(64).into();
                     plot_ui.polygon(
                         Polygon::new("Elipse 95%", contorno)
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 150, 255, 150)))
-                            .fill_color(Color32::from_rgba_unmultiplied(0, 150, 255, 20)),
+                            .stroke(egui::Stroke::new(1.5, Color32::from_rgba_unmultiplied(LILA.r(), LILA.g(), LILA.b(), 180)))
+                            .fill_color(Color32::from_rgba_unmultiplied(LILA.r(), LILA.g(), LILA.b(), 35)),
                     );
                 }
 
@@ -511,7 +518,7 @@ impl PosturografoxApp {
                 );
                 plot_ui.points(
                     Points::new("", puntos)
-                        .color(Color32::from_rgba_unmultiplied(0, 150, 255, 180))
+                        .color(Color32::from_rgba_unmultiplied(AZUL.r(), AZUL.g(), AZUL.b(), 190))
                         .radius(2.5),
                 );
                 plot_ui.points(
@@ -519,7 +526,7 @@ impl PosturografoxApp {
                         .shape(MarkerShape::Circle)
                         .filled(true)
                         .radius(7.0)
-                        .color(Color32::from_rgb(255, 60, 60)),
+                        .color(CORAL),
                 );
             });
     }
@@ -542,8 +549,8 @@ impl PosturografoxApp {
                     [t_ultimo - VENTANA_TIEMPO_S, -limite],
                     [t_ultimo.max(VENTANA_TIEMPO_S), limite],
                 ));
-                plot_ui.line(Line::new("ML", ml).color(Color32::from_rgb(0, 150, 255)).width(1.5));
-                plot_ui.line(Line::new("AP", ap).color(Color32::from_rgb(255, 140, 0)).width(1.5));
+                plot_ui.line(Line::new("ML", ml).color(AZUL).width(1.5));
+                plot_ui.line(Line::new("AP", ap).color(NARANJA).width(1.5));
             });
     }
 }

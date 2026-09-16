@@ -26,6 +26,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Posturografox",
         opciones,
-        Box::new(|_cc| Ok(Box::new(app::PosturografoxApp::default()))),
+        Box::new(|cc| {
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            Ok(Box::new(app::PosturografoxApp::default()))
+        }),
     )
 }
