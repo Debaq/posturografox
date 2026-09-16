@@ -1,4 +1,5 @@
 mod app;
+mod juego;
 mod serial_link;
 
 fn cargar_icono() -> egui::IconData {

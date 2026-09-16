@@ -15,6 +15,7 @@ use std::time::Duration;
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
+use crate::juego;
 use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
 
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
@@ -35,6 +36,7 @@ const CORAL: Color32 = Color32::from_rgb(222, 118, 112); // punto COP actual / d
 const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 95% / detección
 const VERDE: Color32 = Color32::from_rgb(120, 178, 140); // plataforma / calibración
 const GUIA: Color32 = Color32::from_gray(180); // líneas de referencia en 0,0
+const ROSA_JUEGO: Color32 = Color32::from_rgb(214, 130, 176); // acento del modo juego
 
 // ── Superficies: fondo tipo "dashboard" + tarjetas blancas con sombra ───────
 const LIENZO: Color32 = Color32::from_rgb(235, 238, 242);
@@ -206,6 +208,10 @@ pub struct PosturografoxApp {
     ultimo_ap: f64,
 
     ultima_sesion: Option<MetricasBalance>,
+
+    // Modo juego (ver src/juego.rs)
+    modo_juego: bool,
+    estado_juego: juego::EstadoJuego,
 }
 
 impl Default for PosturografoxApp {
@@ -241,6 +247,9 @@ impl Default for PosturografoxApp {
             ultimo_ap: 0.0,
 
             ultima_sesion: None,
+
+            modo_juego: false,
+            estado_juego: juego::EstadoJuego::default(),
         }
     }
 }
@@ -480,6 +489,12 @@ impl PosturografoxApp {
                     self.limpiar_trazo();
                 }
             });
+
+            tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
+                if ui.button("🎮 Modo juego").clicked() {
+                    self.modo_juego = true;
+                }
+            });
         });
     }
 
@@ -630,6 +645,24 @@ impl eframe::App for PosturografoxApp {
         };
         for evento in eventos {
             self.procesar_evento(evento);
+        }
+
+        if self.modo_juego {
+            let entrada = juego::EntradaJuego {
+                cop_ml: self.ultimo_ml,
+                cop_ap: self.ultimo_ap,
+                ancho_cm: self.ancho_cm,
+                prof_cm: self.prof_cm,
+                conectado: self.conexion.is_some(),
+                dt: ui.input(|i| i.stable_dt),
+            };
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(TARJETA_BG)).show(ui, |ui| {
+                if juego::mostrar(ui, &mut self.estado_juego, entrada) {
+                    self.modo_juego = false;
+                }
+            });
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+            return;
         }
 
         let fondo = |margen| egui::Frame::new().fill(LIENZO).inner_margin(margen);
