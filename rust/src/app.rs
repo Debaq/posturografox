@@ -438,9 +438,20 @@ impl PosturografoxApp {
     /// Al subir: tara automática (solo con muestras ya cargadas, sin mezclar
     /// con las de plataforma vacía) + sesión nueva. Al bajar: sesión nueva,
     /// lista para el siguiente. Debounce de N muestras contra ruido puntual.
+    /// Carga sobre la plataforma y umbral con el que compararla, en la misma
+    /// unidad: kilogramos si hay calibración con masa conocida, y cuentas
+    /// crudas del ADC mientras no la haya.
+    fn carga_y_umbral(&self, crudos: [f64; 4]) -> (f64, f64) {
+        if self.config.calibrado_en_kg {
+            (calibracion::peso_kg(&crudos, &self.config.ganancia), self.config.umbral_kg)
+        } else {
+            (crudos.iter().sum(), self.config.umbral)
+        }
+    }
+
     fn procesar_deteccion(&mut self, crudos: [f64; 4]) {
-        let suma_cruda: f64 = crudos.iter().sum();
-        if suma_cruda.abs() >= self.config.umbral {
+        let (carga, umbral) = self.carga_y_umbral(crudos);
+        if carga.abs() >= umbral {
             self.buffer_arriba.push_back(crudos);
             if self.buffer_arriba.len() > self.config.muestras_tara {
                 self.buffer_arriba.pop_front();

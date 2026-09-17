@@ -16,6 +16,7 @@ pub mod defecto {
     pub const GANANCIA: [f64; 4] = [1.0; 4];
     pub const UMBRAL: f64 = 20_000.0;
     pub const DEBOUNCE: u32 = 5;
+    pub const UMBRAL_KG: f64 = 10.0;
     pub const MUESTRAS_TARA: usize = 20;
     pub const ESPACIADO_PUNTOS: usize = 8;
     pub const VENTANA_TIEMPO_S: f64 = 20.0;
@@ -66,7 +67,11 @@ pub struct Config {
 
     // ── Detección automática de subida/bajada ───────────────────────────
     /// Suma cruda a partir de la cual se considera que hay alguien arriba.
+    /// Solo se usa mientras no haya calibración en kg (ver `umbral_kg`).
     pub umbral: f64,
+    /// Lo mismo, pero en kilogramos, una vez calibrado: un umbral en kg se
+    /// entiende sin tener que adivinar a cuántas cuentas del ADC equivale.
+    pub umbral_kg: f64,
     /// Muestras consecutivas que hay que ver para confirmar el cambio.
     pub debounce: u32,
 
@@ -113,6 +118,7 @@ impl Default for Config {
             lado_patron_cm: defecto::LADO_PATRON_CM,
             calibrado_en_kg: false,
             umbral: defecto::UMBRAL,
+            umbral_kg: defecto::UMBRAL_KG,
             debounce: defecto::DEBOUNCE,
             espaciado_puntos: defecto::ESPACIADO_PUNTOS,
             ventana_tiempo_s: defecto::VENTANA_TIEMPO_S,
@@ -199,9 +205,16 @@ fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
 
         seccion(ui, "DETECCIÓN AUTOMÁTICA", acento);
         egui::Grid::new("grid_deteccion").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Umbral de presencia")
-                .on_hover_text("Suma cruda de las 4 celdas a partir de la cual se considera que hay alguien arriba");
-            ui.add(egui::DragValue::new(&mut cfg.umbral).range(0.0..=10_000_000.0).speed(100.0));
+            if cfg.calibrado_en_kg {
+                ui.label("Umbral de presencia")
+                    .on_hover_text("Peso a partir del cual se considera que hay alguien sobre la plataforma");
+                ui.add(egui::DragValue::new(&mut cfg.umbral_kg).range(0.5..=200.0).speed(0.5).suffix(" kg"));
+            } else {
+                ui.label("Umbral de presencia").on_hover_text(
+                    "Suma cruda de las 4 celdas. Tras calibrar con masa conocida, este umbral pasa a ser en kg",
+                );
+                ui.add(egui::DragValue::new(&mut cfg.umbral).range(0.0..=10_000_000.0).speed(100.0));
+            }
             ui.end_row();
             ui.label("Muestras para confirmar").on_hover_text("Evita que un ruido puntual dispare la detección");
             ui.add(egui::DragValue::new(&mut cfg.debounce).range(1..=100));

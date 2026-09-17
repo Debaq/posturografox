@@ -77,7 +77,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R19 · Calibración a kilogramos.** Rutina guiada con masa conocida por
   celda, resultado persistente. Sin ella las ganancias son arbitrarias y el
   COP queda sesgado si las celdas difieren entre sí.
-- [ ] **R20 · Umbral de detección en kg.** Reemplazar el umbral mágico en
+- [x] **R20 · Umbral de detección en kg.** Reemplazar el umbral mágico en
   cuentas crudas (20000) por un umbral en kilogramos una vez calibrado.
 - [ ] **R21 · Elipse coherente.** La elipse dibujada se ajusta hoy sobre la
   ventana del trazo y la reportada sobre la sesión completa: unificar para
