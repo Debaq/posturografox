@@ -37,7 +37,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R8 · Exportación fuera del directorio de trabajo.** Escribir en el
   directorio de datos del usuario (o diálogo de guardado) en vez de
   `./sesiones`, que falla en Windows o con permisos de solo lectura.
-- [ ] **R9 · Tests de exportación aislados.** Usar directorio temporal para que
+- [x] **R9 · Tests de exportación aislados.** Usar directorio temporal para que
   los tests no escriban dentro del repo.
 
 ## Fase 2 — Adquisición robusta

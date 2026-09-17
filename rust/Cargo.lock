@@ -2886,6 +2886,7 @@ dependencies = [
  "ron",
  "serde",
  "serialport",
+ "tempfile",
 ]
 
 [[package]]

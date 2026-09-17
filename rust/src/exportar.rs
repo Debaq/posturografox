@@ -83,9 +83,8 @@ mod tests {
         assert_eq!(sanitizar(""), "anonimo");
     }
 
-    #[test]
-    fn exportar_csv_escribe_metadata_y_filas_esperadas() {
-        let metricas = MetricasBalance {
+    fn metricas_de_prueba() -> MetricasBalance {
+        MetricasBalance {
             longitud_cm: 12.5,
             area95_cm2: 3.2,
             velocidad_media_cms: 1.1,
@@ -94,18 +93,24 @@ mod tests {
             rms_ap_cm: 0.4,
             rango_ml_cm: 2.0,
             rango_ap_cm: 1.5,
-        };
+        }
+    }
+
+    #[test]
+    fn exportar_csv_escribe_metadata_y_filas_esperadas() {
+        // Directorio temporal propio: el test no escribe en el repo ni en la
+        // carpeta de datos del usuario, y se borra solo al terminar.
+        let carpeta = tempfile::tempdir().expect("crear directorio temporal");
         let registro = [[0.0, 0.0, 0.0], [0.5, 0.1, -0.1], [1.0, 0.2, -0.2]];
 
-        let carpeta = std::env::temp_dir().join("posturografox_test_exportar");
         let ruta = exportar_csv_en(
-            &carpeta,
+            carpeta.path(),
             "Test Paciente",
             Condicion::OjosCerrados,
             Superficie::Espuma,
             40.0,
             40.0,
-            &metricas,
+            &metricas_de_prueba(),
             &registro,
         )
         .expect("exportar_csv no debería fallar");
@@ -117,7 +122,47 @@ mod tests {
         assert!(contenido.contains("t_s,cop_ml_cm,cop_ap_cm"));
         assert!(contenido.contains("0.5000,0.1000,-0.1000"));
         assert_eq!(contenido.lines().count(), 19, "15 líneas de metadata + encabezado + 3 filas");
+    }
 
-        fs::remove_file(&ruta).ok();
+    #[test]
+    fn exportar_crea_la_carpeta_destino_si_no_existe() {
+        let base = tempfile::tempdir().expect("crear directorio temporal");
+        let carpeta = base.path().join("sesiones/anidada");
+        assert!(!carpeta.exists());
+
+        let ruta = exportar_csv_en(
+            &carpeta,
+            "ID-42",
+            Condicion::OjosAbiertos,
+            Superficie::Firme,
+            40.0,
+            40.0,
+            &metricas_de_prueba(),
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        )
+        .expect("debería crear la carpeta y escribir igual");
+
+        assert!(ruta.starts_with(&carpeta));
+        assert!(ruta.exists());
+    }
+
+    #[test]
+    fn el_nombre_del_archivo_identifica_paciente_condicion_y_superficie() {
+        let carpeta = tempfile::tempdir().expect("crear directorio temporal");
+        let ruta = exportar_csv_en(
+            carpeta.path(),
+            "Ana Pérez",
+            Condicion::OjosCerrados,
+            Superficie::Espuma,
+            40.0,
+            40.0,
+            &metricas_de_prueba(),
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        )
+        .expect("exportar");
+
+        let nombre = ruta.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(nombre.starts_with("sesion_Ana_Pérez_espuma_ojos_cerrados_"), "nombre inesperado: {nombre}");
+        assert!(nombre.ends_with(".csv"));
     }
 }
