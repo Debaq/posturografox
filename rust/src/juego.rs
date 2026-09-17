@@ -2,10 +2,7 @@
 //! moviéndose de lado a lado según el COP medio-lateral en vivo. Ver
 //! `EntradaJuego` para lo que llega del posturógrafo real en cada frame.
 
-use egui::{
-    Align2, Color32, ColorImage, Image, Key, Pos2, Rect, RichText, TextureHandle, TextureOptions,
-    Ui, Vec2,
-};
+use egui::{Align2, Color32, ColorImage, Image, Key, Pos2, Rect, RichText, TextureHandle, TextureOptions, Ui, Vec2};
 
 const ZORRO_BYTES: &[u8] = include_bytes!("../assets/fox.png");
 const ZORRO_COLUMNAS: u32 = 8;
@@ -138,10 +135,8 @@ impl Audio {
         if ya_sonando {
             return;
         }
-        let intento = (
-            rodio::Sink::try_new(&self.salida),
-            rodio::Decoder::new(std::io::Cursor::new(Self::bytes_de(pista))),
-        );
+        let intento =
+            (rodio::Sink::try_new(&self.salida), rodio::Decoder::new(std::io::Cursor::new(Self::bytes_de(pista))));
         if let (Ok(sink), Ok(fuente)) = intento {
             sink.set_volume(VOLUMEN_MUSICA);
             sink.append(fuente);
@@ -308,10 +303,7 @@ impl SpriteSheet {
 
     fn dibujar_en(&self, ui: &Ui, centro: Pos2, tamano: Vec2, indice: usize, rotacion: f32) {
         let rect = Rect::from_center_size(centro, tamano);
-        Image::from_texture(&self.textura)
-            .uv(self.uv(indice))
-            .rotate(rotacion, Vec2::splat(0.5))
-            .paint_at(ui, rect);
+        Image::from_texture(&self.textura).uv(self.uv(indice)).rotate(rotacion, Vec2::splat(0.5)).paint_at(ui, rect);
     }
 
     /// Dibuja la celda `indice` cubriendo todo `rect` (recorta el sobrante,
@@ -355,12 +347,9 @@ fn obtener_sprite(
 ) -> SpriteSheet {
     cache
         .get_or_insert_with(|| {
-            let imagen = image::load_from_memory(bytes)
-                .expect("sprite del juego inválido")
-                .into_rgba8();
+            let imagen = image::load_from_memory(bytes).expect("sprite del juego inválido").into_rgba8();
             let (ancho, alto) = imagen.dimensions();
-            let color_image =
-                ColorImage::from_rgba_unmultiplied([ancho as usize, alto as usize], imagen.as_raw());
+            let color_image = ColorImage::from_rgba_unmultiplied([ancho as usize, alto as usize], imagen.as_raw());
             let textura = ui.ctx().load_texture(nombre, color_image, TextureOptions::LINEAR);
             SpriteSheet {
                 textura,
@@ -521,35 +510,14 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         GALLINA_COLUMNAS,
         GALLINA_FILAS,
     );
-    let conejo = obtener_sprite(
-        ui,
-        &mut estado.sprite_conejo,
-        "conejo_sprite",
-        CONEJO_BYTES,
-        CONEJO_COLUMNAS,
-        CONEJO_FILAS,
-    );
-    let rocas = obtener_sprite(
-        ui,
-        &mut estado.sprite_rocas,
-        "rocas_sprite",
-        ROCAS_BYTES,
-        ROCAS_COLUMNAS,
-        ROCAS_FILAS,
-    );
+    let conejo =
+        obtener_sprite(ui, &mut estado.sprite_conejo, "conejo_sprite", CONEJO_BYTES, CONEJO_COLUMNAS, CONEJO_FILAS);
+    let rocas = obtener_sprite(ui, &mut estado.sprite_rocas, "rocas_sprite", ROCAS_BYTES, ROCAS_COLUMNAS, ROCAS_FILAS);
     let fondo_dia = obtener_sprite(ui, &mut estado.sprite_fondo_dia, "fondo_dia_sprite", FONDO_DIA_BYTES, 1, 1);
-    let fondo_noche =
-        obtener_sprite(ui, &mut estado.sprite_fondo_noche, "fondo_noche_sprite", FONDO_NOCHE_BYTES, 1, 1);
-    let fondo_halloween = obtener_sprite(
-        ui,
-        &mut estado.sprite_fondo_halloween,
-        "fondo_halloween_sprite",
-        FONDO_HALLOWEEN_BYTES,
-        1,
-        1,
-    );
-    let plataforma =
-        obtener_sprite(ui, &mut estado.sprite_plataforma, "plataforma_sprite", PLATAFORMA_BYTES, 1, 1);
+    let fondo_noche = obtener_sprite(ui, &mut estado.sprite_fondo_noche, "fondo_noche_sprite", FONDO_NOCHE_BYTES, 1, 1);
+    let fondo_halloween =
+        obtener_sprite(ui, &mut estado.sprite_fondo_halloween, "fondo_halloween_sprite", FONDO_HALLOWEEN_BYTES, 1, 1);
+    let plataforma = obtener_sprite(ui, &mut estado.sprite_plataforma, "plataforma_sprite", PLATAFORMA_BYTES, 1, 1);
     let contador = obtener_sprite(
         ui,
         &mut estado.sprite_contador,
@@ -633,8 +601,19 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     }
 
     let salir_boton = dibujar_partida(
-        ui, &zorro, &caida, &gallina, &conejo, &rocas, &fondo_dia, &fondo_noche, &fondo_halloween,
-        &plataforma, &contador, audio.as_deref_mut(), partida,
+        ui,
+        &zorro,
+        &caida,
+        &gallina,
+        &conejo,
+        &rocas,
+        &fondo_dia,
+        &fondo_noche,
+        &fondo_halloween,
+        &plataforma,
+        &contador,
+        audio.as_deref_mut(),
+        partida,
     );
     if partida.game_over && partida.puntaje > estado.puntaje_maximo {
         estado.puntaje_maximo = partida.puntaje;
@@ -697,15 +676,8 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
         let ancho_frac = partida.rng.rango(0.06, 0.13);
         let x_frac = partida.rng.rango(ancho_frac / 2.0, 1.0 - ancho_frac / 2.0);
         let variante = (partida.rng.rango(0.0, ROCAS_COLUMNAS as f32) as usize).min(ROCAS_COLUMNAS as usize - 1);
-        partida.obstaculos.push(Obstaculo {
-            x_frac,
-            ancho_frac,
-            y_px: -40.0,
-            esquivado: false,
-            variante,
-        });
-        let intervalo_base =
-            (INTERVALO_SPAWN_INICIAL - partida.tiempo * 0.02).max(INTERVALO_SPAWN_MIN);
+        partida.obstaculos.push(Obstaculo { x_frac, ancho_frac, y_px: -40.0, esquivado: false, variante });
+        let intervalo_base = (INTERVALO_SPAWN_INICIAL - partida.tiempo * 0.02).max(INTERVALO_SPAWN_MIN);
         partida.temporizador_spawn = intervalo_base + partida.rng.rango(-0.15, 0.2);
     }
 
@@ -717,11 +689,7 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
     // Spawn de recompensas (gallina o conejo, más esporádicas que los obstáculos).
     partida.temporizador_recompensa -= dt;
     if partida.temporizador_recompensa <= 0.0 {
-        let tipo = if partida.rng.rango(0.0, 1.0) < 0.5 {
-            TipoRecompensa::Gallina
-        } else {
-            TipoRecompensa::Conejo
-        };
+        let tipo = if partida.rng.rango(0.0, 1.0) < 0.5 { TipoRecompensa::Gallina } else { TipoRecompensa::Conejo };
         let x_frac = partida.rng.rango(0.15, 0.85);
         partida.recompensas.push(Recompensa {
             tipo,
@@ -741,11 +709,7 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
     partida.temporizador_polvo -= dt;
     if partida.temporizador_polvo <= 0.0 {
         let vida_total = partida.rng.rango(0.35, 0.5);
-        partida.particulas.push(Particula {
-            jitter_x: partida.rng.rango(-0.6, 0.6),
-            vida: vida_total,
-            vida_total,
-        });
+        partida.particulas.push(Particula { jitter_x: partida.rng.rango(-0.6, 0.6), vida: vida_total, vida_total });
         partida.temporizador_polvo = partida.rng.rango(0.09, 0.16);
     }
     for p in &mut partida.particulas {
@@ -827,11 +791,7 @@ fn dibujar_partida(
         rocas_sprite.dibujar_en(ui, centro, tamano, obstaculo.variante, 0.0);
 
         if !obstaculo.esquivado {
-            if circulo_rect_colisiona(
-                Pos2::new(x_zorro, y_zorro),
-                alto_zorro * 0.4,
-                roca_rect,
-            ) {
+            if circulo_rect_colisiona(Pos2::new(x_zorro, y_zorro), alto_zorro * 0.4, roca_rect) {
                 obstaculo.esquivado = true; // esta roca ya no puede golpear de nuevo
                 if partida.vidas.pop().is_some() {
                     partida.pausa = PAUSA_GOLPE_SEGUNDOS;
@@ -951,10 +911,7 @@ fn dibujar_partida(
         color_hud.gamma_multiply(0.7),
     );
 
-    let boton_rect = Rect::from_min_size(
-        Pos2::new(rect.right() - 90.0, rect.bottom() - 44.0),
-        Vec2::new(74.0, 30.0),
-    );
+    let boton_rect = Rect::from_min_size(Pos2::new(rect.right() - 90.0, rect.bottom() - 44.0), Vec2::new(74.0, 30.0));
     let salir = ui.put(boton_rect, egui::Button::new("Salir")).clicked();
 
     if golpe {
@@ -1013,12 +970,7 @@ fn dibujar_desconectado(ui: &mut Ui, sprite: &SpriteSheet) {
     let alto_zorro = (alto * 0.32).clamp(140.0, 360.0);
     sprite.dibujar(ui, Pos2::new(cx, rect.top() + alto * 0.38), alto_zorro, 0, 0.0);
 
-    texto_centrado(
-        "Conectá el posturógrafo para jugar",
-        0.63,
-        (alto * 0.042).clamp(20.0, 34.0),
-        TEXTO,
-    );
+    texto_centrado("Conectá el posturógrafo para jugar", 0.63, (alto * 0.042).clamp(20.0, 34.0), TEXTO);
     texto_centrado(
         "En cuanto detecte señal, arranca solo",
         0.70,
@@ -1142,9 +1094,7 @@ fn dibujar_pie_fin_partida(
         Vec2::new(boton_ancho * 0.7, boton_alto),
     );
 
-    let reintentar = ui
-        .put(rect_reintentar, egui::Button::new(RichText::new("🔁 Reintentar").size(16.0)))
-        .clicked();
+    let reintentar = ui.put(rect_reintentar, egui::Button::new(RichText::new("🔁 Reintentar").size(16.0))).clicked();
     let salir = ui.put(rect_salir, egui::Button::new(RichText::new("Salir").size(15.0))).clicked();
     (salir, reintentar)
 }

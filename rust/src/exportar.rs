@@ -11,16 +11,8 @@ use crate::estabilometria::{Condicion, MetricasBalance, Superficie};
 const CARPETA_SESIONES: &str = "sesiones";
 
 fn sanitizar(texto: &str) -> String {
-    let limpio: String = texto
-        .trim()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect();
-    if limpio.is_empty() {
-        "anonimo".to_string()
-    } else {
-        limpio
-    }
+    let limpio: String = texto.trim().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+    if limpio.is_empty() { "anonimo".to_string() } else { limpio }
 }
 
 /// Escribe `sesiones/sesion_<paciente>_<superficie>_<condicion>_<epoch>.csv`
@@ -37,8 +29,7 @@ pub fn exportar_csv(
     fs::create_dir_all(CARPETA_SESIONES)?;
 
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    let nombre =
-        format!("sesion_{}_{}_{}_{}.csv", sanitizar(paciente), superficie.slug(), condicion.slug(), epoch);
+    let nombre = format!("sesion_{}_{}_{}_{}.csv", sanitizar(paciente), superficie.slug(), condicion.slug(), epoch);
     let ruta = PathBuf::from(CARPETA_SESIONES).join(nombre);
 
     let mut archivo = fs::File::create(&ruta)?;
@@ -90,9 +81,16 @@ mod tests {
         };
         let registro = [[0.0, 0.0, 0.0], [0.5, 0.1, -0.1], [1.0, 0.2, -0.2]];
 
-        let ruta =
-            exportar_csv("Test Paciente", Condicion::OjosCerrados, Superficie::Espuma, 40.0, 40.0, &metricas, &registro)
-                .expect("exportar_csv no debería fallar");
+        let ruta = exportar_csv(
+            "Test Paciente",
+            Condicion::OjosCerrados,
+            Superficie::Espuma,
+            40.0,
+            40.0,
+            &metricas,
+            &registro,
+        )
+        .expect("exportar_csv no debería fallar");
 
         let contenido = fs::read_to_string(&ruta).expect("el archivo debe existir y ser legible");
         assert!(contenido.contains("# paciente: Test Paciente"));

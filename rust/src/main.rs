@@ -8,15 +8,9 @@ mod serial_link;
 
 fn cargar_icono() -> egui::IconData {
     let bytes = include_bytes!("../../logo.jpeg");
-    let imagen = image::load_from_memory(bytes)
-        .expect("logo.jpeg inválido")
-        .into_rgba8();
+    let imagen = image::load_from_memory(bytes).expect("logo.jpeg inválido").into_rgba8();
     let (ancho, alto) = imagen.dimensions();
-    egui::IconData {
-        rgba: imagen.into_raw(),
-        width: ancho,
-        height: alto,
-    }
+    egui::IconData { rgba: imagen.into_raw(), width: ancho, height: alto }
 }
 
 fn main() -> eframe::Result<()> {

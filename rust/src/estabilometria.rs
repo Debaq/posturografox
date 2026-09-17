@@ -140,11 +140,7 @@ pub fn calcular_metricas(muestras: &[[f64; 3]]) -> Option<MetricasBalance> {
 /// misma superficie) como para comparar superficies o el "ratio vestibular"
 /// del CTSIB completo (base=firme+ojos abiertos, comparado=espuma+ojos cerrados).
 pub fn cociente_area(base: &MetricasBalance, comparado: &MetricasBalance) -> Option<f64> {
-    if base.area95_cm2 > 0.0 {
-        Some(comparado.area95_cm2 / base.area95_cm2)
-    } else {
-        None
-    }
+    if base.area95_cm2 > 0.0 { Some(comparado.area95_cm2 / base.area95_cm2) } else { None }
 }
 
 /// Semiejes + ángulo de la elipse de confianza al 95% de una nube de puntos 2D,
@@ -183,11 +179,7 @@ pub fn ajustar_elipse95(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
     let disc = (tr * tr / 4.0 - det).max(0.0).sqrt();
     let lambda1 = (tr / 2.0 + disc).max(0.0);
     let lambda2 = (tr / 2.0 - disc).max(0.0);
-    let angulo = if cov_xy.abs() < 1e-9 && var_x >= var_y {
-        0.0
-    } else {
-        0.5 * (2.0 * cov_xy).atan2(var_x - var_y)
-    };
+    let angulo = if cov_xy.abs() < 1e-9 && var_x >= var_y { 0.0 } else { 0.5 * (2.0 * cov_xy).atan2(var_x - var_y) };
 
     Some(Elipse {
         centro: (media_x, media_y),
@@ -261,12 +253,7 @@ mod tests {
     #[test]
     fn rango_y_rms_de_oscilacion_simetrica() {
         // Oscila entre -1 y 1 en X, quieto en Y: rango X = 2, rango Y = 0
-        let muestras = [
-            [0.0, -1.0, 0.0],
-            [1.0, 1.0, 0.0],
-            [2.0, -1.0, 0.0],
-            [3.0, 1.0, 0.0],
-        ];
+        let muestras = [[0.0, -1.0, 0.0], [1.0, 1.0, 0.0], [2.0, -1.0, 0.0], [3.0, 1.0, 0.0]];
         let m = calcular_metricas(&muestras).unwrap();
         assert!((m.rango_ml_cm - 2.0).abs() < 1e-9);
         assert!(m.rango_ap_cm.abs() < 1e-9);

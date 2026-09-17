@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::serial_link::{puertos_usables, BAUDIOS};
+use crate::serial_link::{BAUDIOS, puertos_usables};
 
 const ID_FIRMWARE: &str = "POSTUROGRAFOX";
 const TIEMPO_POR_PUERTO: Duration = Duration::from_millis(1500);

@@ -5,9 +5,9 @@
 //! (tara/resync del firmware) a través de un `Box<dyn SerialPort>` clonado.
 
 use std::io::{BufRead, BufReader};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -49,10 +49,8 @@ pub struct ConexionSerie {
 
 impl ConexionSerie {
     pub fn conectar(puerto: &str) -> Result<Self, String> {
-        let lector = serialport::new(puerto, BAUDIOS)
-            .timeout(Duration::from_millis(200))
-            .open()
-            .map_err(|e| e.to_string())?;
+        let lector =
+            serialport::new(puerto, BAUDIOS).timeout(Duration::from_millis(200)).open().map_err(|e| e.to_string())?;
         let escritor = lector.try_clone().map_err(|e| e.to_string())?;
 
         let (tx, rx) = mpsc::channel();
@@ -61,11 +59,7 @@ impl ConexionSerie {
 
         thread::spawn(move || hilo_lectura(lector, tx, detener_hilo));
 
-        Ok(Self {
-            escritor,
-            detener,
-            eventos: rx,
-        })
+        Ok(Self { escritor, detener, eventos: rx })
     }
 
     pub fn enviar_comando(&mut self, c: u8) {
@@ -104,10 +98,7 @@ fn hilo_lectura(puerto: Box<dyn SerialPort>, tx: mpsc::Sender<EventoSerie>, dete
                 }
                 let valores: Result<Vec<f64>, _> = partes.iter().map(|p| p.trim().parse::<f64>()).collect();
                 let Ok(v) = valores else { continue }; // encabezado "fd,fi,bd,bi" u otra línea no numérica
-                let muestra = Muestra {
-                    t: t0.elapsed().as_secs_f64(),
-                    crudos: [v[0], v[1], v[2], v[3]],
-                };
+                let muestra = Muestra { t: t0.elapsed().as_secs_f64(), crudos: [v[0], v[1], v[2], v[3]] };
                 if tx.send(EventoSerie::Muestra(muestra)).is_err() {
                     break; // la UI se cerró
                 }

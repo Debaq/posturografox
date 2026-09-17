@@ -9,18 +9,20 @@
 //!   COP_ap (antero-posterior, + = frente) = ((fd+fi)-(bd+bi))/suma * profundidad/2
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
-use crate::estabilometria::{ajustar_elipse95, calcular_metricas, cociente_area, Condicion, MetricasBalance, Superficie};
-use crate::limites;
-use crate::exportar::exportar_csv;
 use crate::descubrimiento::{self, EventoDescubrimiento};
+use crate::estabilometria::{
+    Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
+};
+use crate::exportar::exportar_csv;
 use crate::juego;
-use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
+use crate::limites;
+use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 
 /// Única fuente de verdad de la versión: la de `Cargo.toml`. Se muestra en el
 /// título de la ventana y en la barra de estado.
@@ -57,12 +59,7 @@ const LIENZO: Color32 = Color32::from_rgb(235, 238, 242);
 const TARJETA_BG: Color32 = Color32::from_rgb(252, 253, 254);
 
 fn sombra_tarjeta() -> egui::Shadow {
-    egui::Shadow {
-        offset: [0, 2],
-        blur: 10,
-        spread: 0,
-        color: Color32::from_black_alpha(22),
-    }
+    egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(22) }
 }
 
 /// Tarjeta con acento de color por categoría: agrupa controles relacionados
@@ -297,10 +294,7 @@ impl PosturografoxApp {
     /// como el "objetivo siguiente" del ejercicio de límites: cierra una
     /// sesión y ya queda listo el próximo paso, sin tocar nada a mano.
     fn avanzar_paso_ctsib(&mut self) {
-        let actual = PASOS_CTSIB
-            .iter()
-            .position(|&(s, c)| s == self.superficie && c == self.condicion)
-            .unwrap_or(0);
+        let actual = PASOS_CTSIB.iter().position(|&(s, c)| s == self.superficie && c == self.condicion).unwrap_or(0);
         for offset in 1..=PASOS_CTSIB.len() {
             let (s, c) = PASOS_CTSIB[(actual + offset) % PASOS_CTSIB.len()];
             if !self.resultados_ctsib.contains_key(&(s, c)) {
@@ -497,11 +491,7 @@ impl PosturografoxApp {
 
         ui.horizontal(|ui| {
             tarjeta(ui, "PACIENTE", LILA, |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.paciente)
-                        .hint_text("Paciente / ID")
-                        .desired_width(140.0),
-                );
+                ui.add(egui::TextEdit::singleline(&mut self.paciente).hint_text("Paciente / ID").desired_width(140.0));
                 let hay_datos = !self.ultimo_registro.is_empty();
                 if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
                     self.exportar_sesion();
@@ -550,11 +540,7 @@ impl PosturografoxApp {
                 let barra = |ui: &mut egui::Ui, etq: &str, idx: usize| {
                     ui.label(etq);
                     let pct = self.ultimos_pct[idx].clamp(0.0, 100.0);
-                    ui.add(
-                        egui::ProgressBar::new((pct / 100.0) as f32)
-                            .desired_width(56.0)
-                            .text(format!("{pct:.0}%")),
-                    );
+                    ui.add(egui::ProgressBar::new((pct / 100.0) as f32).desired_width(56.0).text(format!("{pct:.0}%")));
                 };
                 // Grilla 2x2 como la plataforma real: frontal arriba, posterior abajo.
                 ui.vertical(|ui| {
@@ -677,11 +663,7 @@ impl PosturografoxApp {
                 partes.push(format!("Ratio vestibular {c:.2}x"));
             }
         }
-        if partes.is_empty() {
-            None
-        } else {
-            Some(partes.join(" · "))
-        }
+        if partes.is_empty() { None } else { Some(partes.join(" · ")) }
     }
 
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
@@ -726,39 +708,38 @@ impl PosturografoxApp {
                     let contorno: PlotPoints = e.contorno(64).into();
                     plot_ui.polygon(
                         Polygon::new("Elipse 95%", contorno)
-                            .stroke(egui::Stroke::new(1.5, Color32::from_rgba_unmultiplied(LILA.r(), LILA.g(), LILA.b(), 180)))
+                            .stroke(egui::Stroke::new(
+                                1.5,
+                                Color32::from_rgba_unmultiplied(LILA.r(), LILA.g(), LILA.b(), 180),
+                            ))
                             .fill_color(Color32::from_rgba_unmultiplied(LILA.r(), LILA.g(), LILA.b(), 35)),
                     );
                 }
 
-                plot_ui.line(
-                    Line::new("Trazo", trazo)
-                        .width(1.5)
-                        .gradient_color(
-                            Arc::new(move |p: PlotPoint| {
-                                let t = fraccion.get(&(p.x.to_bits(), p.y.to_bits())).copied().unwrap_or(1.0);
-                                lerp_color(color_vieja, color_nueva, t)
-                            }),
-                            false,
-                        ),
-                );
+                plot_ui.line(Line::new("Trazo", trazo).width(1.5).gradient_color(
+                    Arc::new(move |p: PlotPoint| {
+                        let t = fraccion.get(&(p.x.to_bits(), p.y.to_bits())).copied().unwrap_or(1.0);
+                        lerp_color(color_vieja, color_nueva, t)
+                    }),
+                    false,
+                ));
                 plot_ui.points(
                     Points::new("", puntos)
                         .color(Color32::from_rgba_unmultiplied(AZUL.r(), AZUL.g(), AZUL.b(), 190))
                         .radius(2.5),
                 );
                 plot_ui.points(
-                    Points::new("COP", actual)
-                        .shape(MarkerShape::Circle)
-                        .filled(true)
-                        .radius(7.0)
-                        .color(CORAL),
+                    Points::new("COP", actual).shape(MarkerShape::Circle).filled(true).radius(7.0).color(CORAL),
                 );
 
                 if let Some(obj) = self.ejercicio.objetivo_actual(self.ancho_cm, self.prof_cm) {
                     let anillo: PlotPoints = vec![[obj.x, obj.y]].into();
                     plot_ui.points(
-                        Points::new("Objetivo", anillo).shape(MarkerShape::Circle).filled(false).radius(12.0).color(AMARILLO),
+                        Points::new("Objetivo", anillo)
+                            .shape(MarkerShape::Circle)
+                            .filled(false)
+                            .radius(12.0)
+                            .color(AMARILLO),
                     );
                     let progreso = self.ejercicio.progreso_hold();
                     if progreso > 0.0 {
@@ -801,7 +782,13 @@ impl PosturografoxApp {
 
 /// Tarjeta blanca con encabezado, usada para enmarcar cada gráfico principal
 /// (mismo lenguaje visual que `tarjeta`, pero pensada para contenido alto).
-fn tarjeta_plot(ui: &mut egui::Ui, titulo: &str, acento: Color32, alto: f32, contenido: impl FnOnce(&mut egui::Ui, f32)) {
+fn tarjeta_plot(
+    ui: &mut egui::Ui,
+    titulo: &str,
+    acento: Color32,
+    alto: f32,
+    contenido: impl FnOnce(&mut egui::Ui, f32),
+) {
     egui::Frame::new()
         .fill(TARJETA_BG)
         .stroke(egui::Stroke::new(1.0, Color32::from_gray(224)))
@@ -886,9 +873,7 @@ impl eframe::App for PosturografoxApp {
                 ui.painter().circle_filled(rect.center(), 4.0, color);
                 ui.label(&self.estado);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("v{VERSION}")).small().color(Color32::from_gray(150)),
-                    );
+                    ui.label(egui::RichText::new(format!("v{VERSION}")).small().color(Color32::from_gray(150)));
                 });
             });
         });

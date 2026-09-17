@@ -18,7 +18,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   una rama.
 - [x] **R3 · Versión única.** El archivo `VERSION` y `Cargo.toml` divergen:
   dejar `Cargo.toml` como fuente de verdad y que la app muestre su versión.
-- [ ] **R4 · Licencia, privacidad y herramientas.** `LICENSE`, nota de manejo de
+- [x] **R4 · Licencia, privacidad y herramientas.** `LICENSE`, nota de manejo de
   datos de pacientes, `rustfmt.toml` y `rust-toolchain.toml` para builds
   reproducibles.
 - [ ] **R5 · Avisos de clippy.** Los 12 avisos actuales (ifs colapsables, deref
