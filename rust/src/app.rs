@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
+use crate::calibracion::{self, Asistente};
 use crate::config::{self, Config};
 use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::estabilometria::{
@@ -168,6 +169,8 @@ pub struct PosturografoxApp {
 
     // Calibración: offset (tara por software); la ganancia por canal vive en `config`
     offset: [f64; 4],
+    /// Asistente de calibración con masa conocida, mientras está abierto.
+    asistente: Option<Asistente>,
     buffer_crudo: VecDeque<[f64; 4]>,
     buffer_arriba: VecDeque<[f64; 4]>, // solo muestras ya sobre el umbral
 
@@ -244,6 +247,7 @@ impl Default for PosturografoxApp {
             reconexion: None,
 
             offset: [0.0; 4],
+            asistente: None,
             buffer_crudo: VecDeque::with_capacity(config.muestras_tara),
             buffer_arriba: VecDeque::with_capacity(config.muestras_tara),
 
@@ -473,6 +477,9 @@ impl PosturografoxApp {
 
     fn procesar_muestra(&mut self, m: Muestra) {
         self.muestras_perdidas += m.perdidas;
+        if let Some(asistente) = &mut self.asistente {
+            asistente.alimentar(m.crudos);
+        }
         self.buffer_crudo.push_back(m.crudos);
         if self.buffer_crudo.len() > self.config.muestras_tara {
             self.buffer_crudo.pop_front();
@@ -664,6 +671,16 @@ impl PosturografoxApp {
                 {
                     self.tara_software(false);
                 }
+                if ui
+                    .button("⚖ Calibrar")
+                    .on_hover_text("Asistente con masa conocida: deja las lecturas en kilogramos")
+                    .clicked()
+                {
+                    self.asistente = Some(Asistente::default());
+                }
+                if self.config.calibrado_en_kg {
+                    ui.label(egui::RichText::new("en kg").small().color(VERDE));
+                }
             });
 
             tarjeta(ui, "TRAZO", CORAL, |ui| {
@@ -806,6 +823,84 @@ impl PosturografoxApp {
         ) {
             Ok(ruta) => self.estado = format!("Exportado: {}", ruta.display()),
             Err(e) => self.estado = format!("Error al exportar: {e}"),
+        }
+    }
+
+    /// Asistente de calibración a kilogramos con una masa conocida
+    /// (ver src/calibracion.rs).
+    fn ventana_calibracion(&mut self, ctx: &egui::Context) {
+        let Some(asistente) = &mut self.asistente else { return };
+        let masa = self.config.masa_calibracion_kg;
+        let lado = self.config.lado_patron_cm;
+        let mut cerrar = false;
+        let mut abierta = true;
+
+        egui::Window::new("⚖ Calibración con masa conocida").open(&mut abierta).default_width(460.0).show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "El peso total sobre la plataforma es el mismo esté donde esté la masa: con \
+                         una captura por celda queda un sistema de 4 ecuaciones que da la ganancia \
+                         de cada una, incluida la parte de carga que se reparte a las vecinas.",
+                )
+                .small()
+                .color(Color32::from_gray(120)),
+            );
+            ui.add_space(8.0);
+
+            ui.label(egui::RichText::new(asistente.paso.instruccion(lado, masa)).heading());
+            ui.add_space(6.0);
+
+            match asistente.paso {
+                calibracion::Paso::Resultado => {
+                    match asistente.resultado {
+                        Some(ganancias) => {
+                            ui.label("Ganancias resueltas (kg por cuenta):");
+                            for (i, g) in ganancias.iter().enumerate() {
+                                ui.monospace(format!("  {:<28} {g:.8}", calibracion::ETIQUETAS[i]));
+                            }
+                            if let Some(peso) = asistente.peso_verificacion(masa) {
+                                ui.add_space(4.0);
+                                ui.label(format!(
+                                    "Verificación: la última captura pesa {peso:.3} kg (el patrón es {masa:.3} kg)"
+                                ));
+                            }
+                            ui.add_space(8.0);
+                            if ui.button("Guardar calibración").clicked() {
+                                self.config.ganancia = ganancias;
+                                self.config.calibrado_en_kg = true;
+                                self.estado = "Calibración guardada: las lecturas están en kilogramos".to_string();
+                                cerrar = true;
+                            }
+                        }
+                        None => {
+                            ui.colored_label(CORAL, "No se pudo resolver la calibración.");
+                        }
+                    }
+                    if ui.button("Empezar de nuevo").clicked() {
+                        *asistente = Asistente::default();
+                    }
+                }
+                _ => {
+                    ui.label(format!("Muestras promediadas: {}", asistente.muestras_acumuladas()));
+                    let hay_muestras = asistente.muestras_acumuladas() > 0;
+                    if ui
+                        .add_enabled(hay_muestras, egui::Button::new("Capturar"))
+                        .on_hover_text("Promedia todas las muestras que llegaron desde el paso anterior")
+                        .clicked()
+                    {
+                        asistente.capturar(masa);
+                    }
+                }
+            }
+
+            if !asistente.aviso.is_empty() {
+                ui.add_space(6.0);
+                ui.colored_label(CORAL, &asistente.aviso);
+            }
+        });
+
+        if cerrar || !abierta {
+            self.asistente = None;
         }
     }
 
@@ -1152,6 +1247,7 @@ impl eframe::App for PosturografoxApp {
         });
 
         crate::config::ventana(ui.ctx(), &mut self.config, &mut self.mostrar_config, VERDE);
+        self.ventana_calibracion(ui.ctx());
 
         egui::CentralPanel::default().frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             let alto_total = ui.available_height();

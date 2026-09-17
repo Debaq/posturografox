@@ -20,6 +20,8 @@ pub mod defecto {
     pub const ESPACIADO_PUNTOS: usize = 8;
     pub const VENTANA_TIEMPO_S: f64 = 20.0;
     pub const MOSTRAR_ELIPSE: bool = true;
+    pub const MASA_CALIBRACION_KG: f64 = 1.0;
+    pub const LADO_PATRON_CM: f64 = 10.0;
     pub const ENSAYO_DURACION_FIJA: bool = true;
     pub const DURACION_ENSAYO_S: f64 = 30.0;
     pub const DESCARTE_INICIAL_S: f64 = 3.0;
@@ -54,6 +56,13 @@ pub struct Config {
     pub ganancia: [f64; 4],
     /// Cuántas muestras crudas se promedian al pedir tara por software.
     pub muestras_tara: usize,
+    /// Masa del patrón que se usa para calibrar a kilogramos.
+    pub masa_calibracion_kg: f64,
+    /// Lado del patrón, solo para las instrucciones del asistente.
+    pub lado_patron_cm: f64,
+    /// `true` cuando las ganancias vienen de una calibración con masa
+    /// conocida: recién ahí los valores están en kilogramos de verdad.
+    pub calibrado_en_kg: bool,
 
     // ── Detección automática de subida/bajada ───────────────────────────
     /// Suma cruda a partir de la cual se considera que hay alguien arriba.
@@ -100,6 +109,9 @@ impl Default for Config {
             prof_cm: defecto::PROF_CM,
             ganancia: defecto::GANANCIA,
             muestras_tara: defecto::MUESTRAS_TARA,
+            masa_calibracion_kg: defecto::MASA_CALIBRACION_KG,
+            lado_patron_cm: defecto::LADO_PATRON_CM,
+            calibrado_en_kg: false,
             umbral: defecto::UMBRAL,
             debounce: defecto::DEBOUNCE,
             espaciado_puntos: defecto::ESPACIADO_PUNTOS,
@@ -170,9 +182,19 @@ fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
                 }
             }
         });
-        ui.horizontal(|ui| {
+        egui::Grid::new("grid_calibracion_extra").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Muestras promediadas en la tara");
             ui.add(egui::DragValue::new(&mut cfg.muestras_tara).range(1..=500));
+            ui.end_row();
+            ui.label("Masa del patrón").on_hover_text("La masa conocida que se usa en el asistente de calibración");
+            ui.add(egui::DragValue::new(&mut cfg.masa_calibracion_kg).range(0.1..=200.0).speed(0.1).suffix(" kg"));
+            ui.end_row();
+            ui.label("Lado del patrón").on_hover_text("Solo para las instrucciones: de qué tamaño es el bloque");
+            ui.add(egui::DragValue::new(&mut cfg.lado_patron_cm).range(1.0..=100.0).speed(0.5).suffix(" cm"));
+            ui.end_row();
+            ui.label("Estado");
+            ui.label(if cfg.calibrado_en_kg { "calibrado en kg" } else { "sin calibrar (valores en cuentas del ADC)" });
+            ui.end_row();
         });
 
         seccion(ui, "DETECCIÓN AUTOMÁTICA", acento);

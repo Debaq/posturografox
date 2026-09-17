@@ -74,7 +74,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   defecto) con descarte de los primeros segundos de acomodación y cuenta
   regresiva en pantalla. Hoy la sesión dura lo que la persona esté parada,
   así que las métricas no son comparables entre ensayos.
-- [ ] **R19 · Calibración a kilogramos.** Rutina guiada con masa conocida por
+- [x] **R19 · Calibración a kilogramos.** Rutina guiada con masa conocida por
   celda, resultado persistente. Sin ella las ganancias son arbitrarias y el
   COP queda sesgado si las celdas difieren entre sí.
 - [ ] **R20 · Umbral de detección en kg.** Reemplazar el umbral mágico en
