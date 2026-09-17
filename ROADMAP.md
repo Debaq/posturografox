@@ -79,7 +79,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   COP queda sesgado si las celdas difieren entre sí.
 - [x] **R20 · Umbral de detección en kg.** Reemplazar el umbral mágico en
   cuentas crudas (20000) por un umbral en kilogramos una vez calibrado.
-- [ ] **R21 · Elipse coherente.** La elipse dibujada se ajusta hoy sobre la
+- [x] **R21 · Elipse coherente.** La elipse dibujada se ajusta hoy sobre la
   ventana del trazo y la reportada sobre la sesión completa: unificar para
   que el área95 del panel corresponda al dibujo.
 - [ ] **R22 · Métricas nuevas.** Velocidad media ML y AP por separado (la más

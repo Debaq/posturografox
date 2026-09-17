@@ -1005,6 +1005,12 @@ impl PosturografoxApp {
         if partes.is_empty() { None } else { Some(partes.join(" · ")) }
     }
 
+    /// El registro que se está midiendo (o el último cerrado si nadie está
+    /// arriba). Es la fuente única de las métricas y de la elipse dibujada.
+    fn registro_medido(&self) -> &[[f64; 3]] {
+        if self.ocupado && !self.ensayo_cerrado { &self.sesion_actual } else { &self.ultimo_registro }
+    }
+
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
         let margen = 1.2;
         let x_lim = self.config.ancho_cm / 2.0 * margen;
@@ -1030,7 +1036,11 @@ impl PosturografoxApp {
         let paso = self.config.espaciado_puntos.max(1);
         let puntos: PlotPoints = xs.iter().zip(ys.iter()).step_by(paso).map(|(&x, &y)| [x, y]).collect();
         let actual: PlotPoints = vec![[self.ultimo_ml, self.ultimo_ap]].into();
-        let elipse = if self.config.mostrar_elipse { ajustar_elipse95(&xs, &ys) } else { None };
+        // La elipse se ajusta sobre el mismo registro del que salen las
+        // métricas, no sobre la ventana del trazo: si se ajustara sobre el
+        // trazo (una ventana de otro largo, y sin filtrar), el área dibujada
+        // no sería la que informa el panel.
+        let elipse = if self.config.mostrar_elipse { ajustar_elipse95(self.registro_medido()) } else { None };
 
         Plot::new("plot_cop")
             .height(altura)

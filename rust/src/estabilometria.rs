@@ -117,7 +117,7 @@ pub fn calcular_metricas(muestras: &[[f64; 3]]) -> Option<MetricasBalance> {
         max - min
     };
 
-    let area95_cm2 = ajustar_elipse95(&xs, &ys).map_or(0.0, |e| e.area());
+    let area95_cm2 = ajustar_elipse95_xy(&xs, &ys).map_or(0.0, |e| e.area());
     let duracion_s = muestras.last().unwrap()[0] - muestras.first().unwrap()[0];
     let velocidad_media_cms = if duracion_s > 0.0 { longitud_cm / duracion_s } else { 0.0 };
 
@@ -152,7 +152,16 @@ pub struct Elipse {
     pub angulo: f64,
 }
 
-pub fn ajustar_elipse95(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
+/// Elipse de confianza 95% de un registro `[t_s, cop_ml_cm, cop_ap_cm]`.
+/// Se toma el registro entero (y no una ventana del trazo) para que la elipse
+/// que se dibuja sea exactamente la que se informa como área 95%.
+pub fn ajustar_elipse95(registro: &[[f64; 3]]) -> Option<Elipse> {
+    let xs: Vec<f64> = registro.iter().map(|m| m[1]).collect();
+    let ys: Vec<f64> = registro.iter().map(|m| m[2]).collect();
+    ajustar_elipse95_xy(&xs, &ys)
+}
+
+pub fn ajustar_elipse95_xy(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
     let n = xs.len();
     if n < 3 {
         return None;
@@ -216,7 +225,7 @@ mod tests {
         // Todo el sway es medio-lateral puro: el eje mayor debe quedar sobre X (ángulo 0)
         let xs = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
         let ys = vec![0.0, 0.0, 0.0, 0.0, 0.0];
-        let e = ajustar_elipse95(&xs, &ys).unwrap();
+        let e = ajustar_elipse95_xy(&xs, &ys).unwrap();
         assert!(e.angulo.abs() < 1e-6, "ángulo esperado 0, dio {}", e.angulo);
         assert!(e.semi_mayor > e.semi_menor);
         assert!(e.semi_menor.abs() < 1e-6, "sin varianza en Y, semi-menor debe ser ~0");
@@ -232,13 +241,13 @@ mod tests {
             xs.push(t.cos());
             ys.push(t.sin());
         }
-        let e = ajustar_elipse95(&xs, &ys).unwrap();
+        let e = ajustar_elipse95_xy(&xs, &ys).unwrap();
         assert!((e.semi_mayor - e.semi_menor).abs() < 1e-3, "mayor={} menor={}", e.semi_mayor, e.semi_menor);
     }
 
     #[test]
     fn menos_de_tres_puntos_no_ajusta_elipse() {
-        assert!(ajustar_elipse95(&[0.0, 1.0], &[0.0, 1.0]).is_none());
+        assert!(ajustar_elipse95_xy(&[0.0, 1.0], &[0.0, 1.0]).is_none());
     }
 
     #[test]
