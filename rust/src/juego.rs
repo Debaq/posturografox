@@ -256,7 +256,7 @@ struct Obstaculo {
 
 /// Bicho atrapable: qué sprite usa, cuántos puntos suma y a qué tamaño
 /// relativo al zorro se dibuja.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TipoRecompensa {
     Gallina,
     Conejo,
@@ -322,18 +322,16 @@ impl SpriteSheet {
         )
     }
 
+    /// Relación ancho/alto de una celda.
+    fn aspecto(&self) -> f32 {
+        self.celda_px.x / self.celda_px.y
+    }
+
     /// Tamaño en pantalla (ancho, alto) que respeta el aspecto real de la
     /// celda para una altura visual deseada `alto_deseado`.
     fn tamano_para_alto(&self, alto_deseado: f32) -> Vec2 {
         let aspecto = self.celda_px.x / self.celda_px.y;
         Vec2::new(alto_deseado * aspecto, alto_deseado)
-    }
-
-    /// Tamaño en pantalla que respeta el aspecto real de la celda para un
-    /// ancho visual deseado `ancho_deseado` (inverso de `tamano_para_alto`).
-    fn tamano_para_ancho(&self, ancho_deseado: f32) -> Vec2 {
-        let aspecto = self.celda_px.x / self.celda_px.y;
-        Vec2::new(ancho_deseado, ancho_deseado / aspecto)
     }
 
     fn dibujar(&self, ui: &Ui, centro: Pos2, alto_deseado: f32, indice: usize, rotacion: f32) {
@@ -623,7 +621,25 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         audio.poner_pista(pista);
     }
 
-    actualizar(partida, &entrada);
+    // La geometría del área de juego se arma una vez por frame y se le pasa a
+    // la simulación; así el movimiento y las colisiones no dependen de egui.
+    let area = ui.available_rect_before_wrap();
+    let escenario = Escenario {
+        ancho: area.width(),
+        alto: area.height(),
+        aspecto_roca: rocas.aspecto(),
+        aspecto_gallina: gallina.aspecto(),
+        aspecto_conejo: conejo.aspecto(),
+    };
+
+    for sonido in actualizar(partida, &entrada, &escenario) {
+        if let Some(audio) = audio.as_deref_mut() {
+            audio.reproducir_efecto(match sonido {
+                Sonido::Golpe => SONIDO_CAIDA,
+                Sonido::Comer => SONIDO_COMER,
+            });
+        }
+    }
 
     if partida.gano {
         if let Some(audio) = audio.as_deref_mut() {
@@ -660,7 +676,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         &fondo_halloween,
         &plataforma,
         &contador,
-        audio.as_deref_mut(),
+        &escenario,
         partida,
     );
     if partida.game_over && partida.puntaje > estado.puntaje_maximo {
@@ -694,18 +710,91 @@ fn repetir_sonido_fin(audio: &mut Audio, partida: &mut Partida, sonido: &'static
     }
 }
 
-fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
+/// Geometría del área de juego y proporciones de los sprites, en píxeles
+/// relativos al borde superior izquierdo de esa área.
+///
+/// Existe para que la simulación (movimiento y colisiones) no dependa del
+/// `Rect` de egui ni de las texturas: con un `Escenario` armado a mano se
+/// puede correr una partida entera en un test.
+#[derive(Clone, Copy)]
+struct Escenario {
+    ancho: f32,
+    alto: f32,
+    /// ancho/alto de una celda del sprite, para calcular el alto a partir del ancho.
+    aspecto_roca: f32,
+    aspecto_gallina: f32,
+    aspecto_conejo: f32,
+}
+
+impl Escenario {
+    fn ancho_pista(&self) -> f32 {
+        (self.ancho - 2.0 * MARGEN_PISTA).max(1.0)
+    }
+
+    fn x_de_frac(&self, f: f32) -> f32 {
+        MARGEN_PISTA + f * self.ancho_pista()
+    }
+
+    fn alto_zorro(&self) -> f32 {
+        (self.ancho * 0.14).clamp(60.0, 168.0)
+    }
+
+    fn y_zorro(&self) -> f32 {
+        self.alto - self.alto_zorro() * 1.4 + 70.0
+    }
+
+    fn x_zorro(&self, fox_x: f32) -> f32 {
+        self.ancho / 2.0 + fox_x * (self.ancho / 2.0 - MARGEN_PISTA - self.alto_zorro() / 2.0)
+    }
+
+    fn radio_zorro(&self) -> f32 {
+        self.alto_zorro() * 0.4
+    }
+
+    /// Rectángulo que ocupa una roca.
+    fn rect_obstaculo(&self, obstaculo: &Obstaculo) -> Rect {
+        let ancho = obstaculo.ancho_frac * self.ancho_pista();
+        let tamano = Vec2::new(ancho, ancho / self.aspecto_roca);
+        Rect::from_center_size(Pos2::new(self.x_de_frac(obstaculo.x_frac), obstaculo.y_px), tamano)
+    }
+
+    /// Alto y aspecto con que se dibuja una recompensa.
+    fn tamano_recompensa(&self, tipo: TipoRecompensa) -> Vec2 {
+        let alto = self.alto_zorro() * tipo.escala_alto();
+        let aspecto = match tipo {
+            TipoRecompensa::Gallina => self.aspecto_gallina,
+            TipoRecompensa::Conejo => self.aspecto_conejo,
+        };
+        Vec2::new(alto * aspecto, alto)
+    }
+
+    fn rect_recompensa(&self, recompensa: &Recompensa) -> Rect {
+        let centro = Pos2::new(self.x_de_frac(recompensa.x_frac), recompensa.y_px);
+        Rect::from_center_size(centro, self.tamano_recompensa(recompensa.tipo))
+    }
+}
+
+/// Lo que la simulación quiere que suene en este frame. La simulación no
+/// toca el audio: solo dice qué pasó.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sonido {
+    Golpe,
+    Comer,
+}
+
+fn actualizar(partida: &mut Partida, entrada: &EntradaJuego, escenario: &Escenario) -> Vec<Sonido> {
     let dt = entrada.dt.clamp(0.0, 0.1);
+    let mut sonidos = Vec::new();
 
     if partida.pausa > 0.0 {
         partida.pausa = (partida.pausa - dt).max(0.0);
-        return; // congelado: nada se mueve ni spawnea mientras dura el golpe
+        return sonidos; // congelado: nada se mueve ni spawnea mientras dura el golpe
     }
 
     partida.tiempo_restante = (partida.tiempo_restante - dt).max(0.0);
     if partida.tiempo_restante <= 0.0 {
         partida.gano = true;
-        return;
+        return sonidos;
     }
 
     // Normaliza el COP ML al rango de la pista (-1.0 izq .. 1.0 der).
@@ -764,6 +853,63 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
         p.vida -= dt;
     }
     partida.particulas.retain(|p| p.vida > 0.0);
+
+    resolver_colisiones(partida, escenario, &mut sonidos);
+    sonidos
+}
+
+/// Choques con rocas y recolección de recompensas. Antes vivía dentro de la
+/// función de dibujo, así que la física dependía del tamaño de la ventana y no
+/// se podía testear sin levantar la UI.
+fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, sonidos: &mut Vec<Sonido>) {
+    let centro_zorro = Pos2::new(escenario.x_zorro(partida.fox_x), escenario.y_zorro());
+    let radio = escenario.radio_zorro();
+    let alto_zorro = escenario.alto_zorro();
+
+    let mut golpe_mortal = false;
+    let mut vidas_consumidas = 0usize;
+    for obstaculo in &mut partida.obstaculos {
+        if obstaculo.esquivado {
+            continue;
+        }
+        let roca = escenario.rect_obstaculo(obstaculo);
+        if circulo_rect_colisiona(centro_zorro, radio, roca) {
+            obstaculo.esquivado = true; // esta roca ya no puede golpear de nuevo
+            if partida.vidas.len() > vidas_consumidas {
+                vidas_consumidas += 1;
+            } else {
+                golpe_mortal = true;
+            }
+        } else if roca.top() > centro_zorro.y + alto_zorro * 0.5 {
+            obstaculo.esquivado = true;
+            partida.puntaje += 25.0;
+        }
+    }
+    for _ in 0..vidas_consumidas {
+        partida.vidas.pop();
+        partida.pausa = PAUSA_GOLPE_SEGUNDOS;
+        sonidos.push(Sonido::Golpe);
+    }
+    if golpe_mortal {
+        partida.game_over = true;
+        partida.temporizador_reinicio = REINICIO_SEGUNDOS;
+    }
+
+    let mut i = 0;
+    while i < partida.recompensas.len() {
+        // La zona de recolección es más chica que el dibujo: el bicho se
+        // "come" cuando el zorro lo tapa, no cuando lo roza.
+        let caja = escenario.rect_recompensa(&partida.recompensas[i]);
+        let zona = Rect::from_center_size(caja.center(), caja.size() * 0.6);
+        if circulo_rect_colisiona(centro_zorro, radio, zona) {
+            let recompensa = partida.recompensas.remove(i);
+            partida.puntaje += recompensa.tipo.puntos();
+            partida.vidas.push(recompensa.tipo);
+            sonidos.push(Sonido::Comer);
+            continue;
+        }
+        i += 1;
+    }
 }
 
 /// Dibuja la partida en curso y hace la detección de colisión (que depende
@@ -784,8 +930,8 @@ fn dibujar_partida(
     fondo_halloween: &SpriteSheet,
     plataforma: &SpriteSheet,
     contador_sprite: &SpriteSheet,
-    mut audio: Option<&mut Audio>,
-    partida: &mut Partida,
+    escenario: &Escenario,
+    partida: &Partida,
 ) -> bool {
     let rect = ui.available_rect_before_wrap(); // fijo: el HUD nunca tiembla
     let painter = ui.painter();
@@ -825,67 +971,27 @@ fn dibujar_partida(
     let alto_plataforma = (rect.height() * 0.14).clamp(50.0, 130.0);
     plataforma.dibujar_tileado(ui, mundo, 0, alto_plataforma);
 
-    let ancho_pista = (rect.width() - 2.0 * MARGEN_PISTA).max(1.0);
-    let x_de_frac = |f: f32| mundo.left() + MARGEN_PISTA + f * ancho_pista;
+    // El origen del mundo (con la sacudida aplicada) para llevar las
+    // posiciones de la simulación a la pantalla.
+    let origen = mundo.min.to_vec2();
+    let alto_zorro = escenario.alto_zorro();
+    let x_zorro = escenario.x_zorro(partida.fox_x) + origen.x;
+    let y_zorro = escenario.y_zorro() + origen.y;
 
-    let alto_zorro = (rect.width() * 0.14).clamp(60.0, 168.0);
-    let y_zorro = mundo.bottom() - alto_zorro * 1.4 + 70.0;
-    let x_zorro = mundo.center().x + partida.fox_x * (rect.width() / 2.0 - MARGEN_PISTA - alto_zorro / 2.0);
-
-    let mut golpe = false;
-    for obstaculo in &mut partida.obstaculos {
-        let ancho_px = obstaculo.ancho_frac * ancho_pista;
-        let x_centro = x_de_frac(obstaculo.x_frac);
-        let centro = Pos2::new(x_centro, mundo.top() + obstaculo.y_px);
-        let tamano = rocas_sprite.tamano_para_ancho(ancho_px);
-        let roca_rect = Rect::from_center_size(centro, tamano);
-        rocas_sprite.dibujar_en(ui, centro, tamano, obstaculo.variante, 0.0);
-
-        if !obstaculo.esquivado {
-            if circulo_rect_colisiona(Pos2::new(x_zorro, y_zorro), alto_zorro * 0.4, roca_rect) {
-                obstaculo.esquivado = true; // esta roca ya no puede golpear de nuevo
-                if partida.vidas.pop().is_some() {
-                    partida.pausa = PAUSA_GOLPE_SEGUNDOS;
-                    if let Some(audio) = audio.as_deref_mut() {
-                        audio.reproducir_efecto(SONIDO_CAIDA);
-                    }
-                } else {
-                    golpe = true;
-                }
-            } else if roca_rect.top() > y_zorro + alto_zorro * 0.5 {
-                obstaculo.esquivado = true;
-                partida.puntaje += 25.0;
-            }
-        }
+    for obstaculo in &partida.obstaculos {
+        let caja = escenario.rect_obstaculo(obstaculo).translate(origen);
+        rocas_sprite.dibujar_en(ui, caja.center(), caja.size(), obstaculo.variante, 0.0);
     }
 
-    // Recompensas: se dibujan, y si el zorro las toca suman puntos y desaparecen.
     let fps_recompensa = 10.0;
-    let mut i = 0;
-    while i < partida.recompensas.len() {
-        let r = &partida.recompensas[i];
-        let sprite = match r.tipo {
+    for recompensa in &partida.recompensas {
+        let sprite = match recompensa.tipo {
             TipoRecompensa::Gallina => gallina_sprite,
             TipoRecompensa::Conejo => conejo_sprite,
         };
-        let alto = alto_zorro * r.tipo.escala_alto();
-        let centro = Pos2::new(x_de_frac(r.x_frac), mundo.top() + r.y_px);
-        let tamano = sprite.tamano_para_alto(alto);
-        let rect_colision = Rect::from_center_size(centro, tamano * 0.6);
-
-        if circulo_rect_colisiona(Pos2::new(x_zorro, y_zorro), alto_zorro * 0.4, rect_colision) {
-            partida.puntaje += r.tipo.puntos();
-            partida.vidas.push(r.tipo);
-            partida.recompensas.remove(i);
-            if let Some(audio) = audio.as_deref_mut() {
-                audio.reproducir_efecto(SONIDO_COMER);
-            }
-            continue;
-        }
-
-        let frame = ((partida.tiempo + r.desfase_animacion) * fps_recompensa) as usize;
-        sprite.dibujar(ui, centro, alto, frame, 0.0);
-        i += 1;
+        let caja = escenario.rect_recompensa(recompensa).translate(origen);
+        let frame = ((partida.tiempo + recompensa.desfase_animacion) * fps_recompensa) as usize;
+        sprite.dibujar_en(ui, caja.center(), caja.size(), frame, 0.0);
     }
 
     // Polvito bajo las patas (dibujado antes que el zorro para que quede detrás).
@@ -964,11 +1070,6 @@ fn dibujar_partida(
 
     let boton_rect = Rect::from_min_size(Pos2::new(rect.right() - 90.0, rect.bottom() - 44.0), Vec2::new(74.0, 30.0));
     let salir = ui.put(boton_rect, egui::Button::new("Salir")).clicked();
-
-    if golpe {
-        partida.game_over = true;
-        partida.temporizador_reinicio = REINICIO_SEGUNDOS;
-    }
 
     ui.ctx().request_repaint();
     salir
@@ -1214,4 +1315,163 @@ fn dibujar_victoria(
     let (salir, reintentar) = dibujar_pie_fin_partida(ui, rect, cx, alto, segundos_reinicio, DORADO);
     ui.ctx().request_repaint();
     (salir, reintentar)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Escenario de referencia: 1000x700 px y sprites cuadrados, para que las
+    /// cuentas de los tests sean fáciles de seguir.
+    fn escenario() -> Escenario {
+        Escenario { ancho: 1000.0, alto: 700.0, aspecto_roca: 1.0, aspecto_gallina: 1.0, aspecto_conejo: 1.0 }
+    }
+
+    fn entrada(dt: f32) -> EntradaJuego {
+        EntradaJuego {
+            cop_ml: 0.0,
+            cop_ap: 0.0,
+            ancho_cm: 40.0,
+            prof_cm: 40.0,
+            conectado: true,
+            en_plataforma: true,
+            dt,
+            duracion_partida_s: 60.0,
+            volumen_musica: 0.0,
+            volumen_efectos: 0.0,
+        }
+    }
+
+    /// Pone una roca justo encima del zorro.
+    fn roca_sobre_el_zorro(partida: &Partida, esc: &Escenario) -> Obstaculo {
+        let x_zorro = esc.x_zorro(partida.fox_x);
+        let x_frac = (x_zorro - MARGEN_PISTA) / esc.ancho_pista();
+        Obstaculo { x_frac, ancho_frac: 0.1, y_px: esc.y_zorro(), esquivado: false, variante: 0 }
+    }
+
+    #[test]
+    fn chocar_sin_vidas_termina_la_partida() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.obstaculos.push(roca_sobre_el_zorro(&partida, &esc));
+
+        let sonidos = actualizar(&mut partida, &entrada(0.016), &esc);
+
+        assert!(partida.game_over, "sin vidas, una roca termina la partida");
+        assert!(sonidos.is_empty(), "el jingle de derrota lo maneja la pantalla de game over");
+    }
+
+    #[test]
+    fn chocar_con_vidas_gasta_una_y_congela_el_juego() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.vidas.push(TipoRecompensa::Gallina);
+        partida.vidas.push(TipoRecompensa::Conejo);
+        partida.obstaculos.push(roca_sobre_el_zorro(&partida, &esc));
+
+        let sonidos = actualizar(&mut partida, &entrada(0.016), &esc);
+
+        assert!(!partida.game_over, "con vidas de sobra no se pierde");
+        assert_eq!(partida.vidas.len(), 1, "se consume una sola vida");
+        assert!(partida.pausa > 0.0, "el golpe congela el juego un momento");
+        assert_eq!(sonidos, vec![Sonido::Golpe]);
+    }
+
+    #[test]
+    fn la_misma_roca_no_puede_golpear_dos_veces() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.vidas.push(TipoRecompensa::Gallina);
+        partida.vidas.push(TipoRecompensa::Gallina);
+        partida.obstaculos.push(roca_sobre_el_zorro(&partida, &esc));
+
+        actualizar(&mut partida, &entrada(0.016), &esc);
+        partida.pausa = 0.0; // como si ya hubiera pasado el congelamiento
+        actualizar(&mut partida, &entrada(0.016), &esc);
+
+        assert_eq!(partida.vidas.len(), 1, "la roca ya golpeó: no puede volver a cobrar");
+    }
+
+    #[test]
+    fn atrapar_una_recompensa_suma_puntos_y_una_vida() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        let x_frac = (esc.x_zorro(partida.fox_x) - MARGEN_PISTA) / esc.ancho_pista();
+        partida.recompensas.push(Recompensa {
+            tipo: TipoRecompensa::Conejo,
+            x_frac,
+            y_px: esc.y_zorro(),
+            desfase_animacion: 0.0,
+        });
+        let puntaje_previo = partida.puntaje;
+
+        let sonidos = actualizar(&mut partida, &entrada(0.016), &esc);
+
+        assert!(partida.recompensas.is_empty(), "la recompensa atrapada desaparece");
+        assert_eq!(partida.vidas, vec![TipoRecompensa::Conejo]);
+        assert!(partida.puntaje >= puntaje_previo + TipoRecompensa::Conejo.puntos());
+        assert_eq!(sonidos, vec![Sonido::Comer]);
+    }
+
+    #[test]
+    fn esquivar_una_roca_suma_puntos() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        // Roca lejos del zorro y ya pasada de largo hacia abajo.
+        partida.obstaculos.push(Obstaculo {
+            x_frac: 0.05,
+            ancho_frac: 0.06,
+            y_px: esc.y_zorro() + esc.alto_zorro(),
+            esquivado: false,
+            variante: 0,
+        });
+        let puntaje_previo = partida.puntaje;
+
+        actualizar(&mut partida, &entrada(0.016), &esc);
+
+        assert!(partida.obstaculos[0].esquivado);
+        assert!(partida.puntaje >= puntaje_previo + 25.0, "esquivarla tiene que premiar");
+        assert!(!partida.game_over);
+    }
+
+    #[test]
+    fn el_juego_queda_congelado_mientras_dura_el_golpe() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.pausa = PAUSA_GOLPE_SEGUNDOS;
+        partida.obstaculos.push(roca_sobre_el_zorro(&partida, &esc));
+        let tiempo_previo = partida.tiempo_restante;
+
+        actualizar(&mut partida, &entrada(0.1), &esc);
+
+        assert!(partida.pausa < PAUSA_GOLPE_SEGUNDOS, "la pausa se va agotando");
+        assert_eq!(partida.tiempo_restante, tiempo_previo, "el reloj no corre durante el golpe");
+        assert!(!partida.game_over, "tampoco se choca mientras está congelado");
+    }
+
+    #[test]
+    fn el_reloj_en_cero_gana_la_partida() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(0.05);
+        actualizar(&mut partida, &entrada(0.1), &esc);
+        assert!(partida.gano);
+        assert!(!partida.game_over);
+    }
+
+    #[test]
+    fn el_zorro_sigue_al_cop_sin_salirse_de_la_pista() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        let mut e = entrada(0.05);
+        e.cop_ml = 100.0; // muy a la derecha, más allá del borde de la plataforma
+
+        for _ in 0..200 {
+            actualizar(&mut partida, &e, &esc);
+        }
+
+        assert!(partida.fox_x > 0.9, "debería irse hacia la derecha, quedó en {}", partida.fox_x);
+        assert!(partida.fox_x <= 1.0, "el movimiento está acotado a la pista");
+        let x = esc.x_zorro(partida.fox_x);
+        assert!(x < esc.ancho, "el zorro no puede salirse del área de juego");
+    }
 }

@@ -107,7 +107,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 - [x] **R29 · El juego exige plataforma ocupada.** Hoy arranca con solo estar
   conectado: el reloj corre y el zorro queda centrado aunque no haya nadie.
-- [ ] **R30 · Simulación pura y tests.** La colisión vive dentro de la función de
+- [x] **R30 · Simulación pura y tests.** La colisión vive dentro de la función de
   dibujo, así que la física depende del tamaño de ventana y no se puede
   testear. Separar simulación (coordenadas normalizadas) de dibujo.
 - [ ] **R31 · Recursos agrupados.** `dibujar_partida` recibe 13 argumentos.
