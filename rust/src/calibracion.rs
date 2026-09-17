@@ -158,20 +158,29 @@ pub fn verificacion(deltas: &[[f64; N_CELDAS]; N_CELDAS], ganancias: &Ganancias)
 
 /// Constante de tiempo del seguimiento automático del cero.
 ///
-/// La deriva real del cero de un HX711 es térmica: minutos, no segundos. Con
-/// una constante corta, el seguimiento se come cargas apoyadas de verdad: un
-/// patrón de 1 kg dejado sobre la plataforma desaparecía en un par de
-/// segundos, y al subirse una persona el cero se corría mientras la carga
-/// cruzaba la zona baja, restando cerca de un kilo a la medición.
-pub const TAU_CERO_S: f64 = 30.0;
+/// Tiene que corregir dos cosas de escalas muy distintas: la deriva térmica
+/// del HX711 (minutos) y el *creep* de las celdas, que después de sacar una
+/// carga dejan un resto de unos cientos de gramos y tardan en relajarse. Con
+/// unos pocos segundos, ese resto desaparece solo mientras la plataforma
+/// queda quieta.
+pub const TAU_CERO_S: f64 = 4.0;
 
-/// Sigue el cero de la balanza con la plataforma libre, para que la deriva
-/// del ADC no se sume al peso.
-#[derive(Clone, Copy, Debug, Default)]
+/// Cuánto tiene que estar quieta la lectura para tocar el cero.
+pub const VENTANA_ESTABLE_S: f64 = 1.0;
+
+/// Sigue el cero de la balanza con la plataforma libre, para que ni la deriva
+/// del ADC ni el resto que dejan las celdas se sumen al peso.
+///
+/// La condición de estabilidad es lo que permite que el seguimiento sea ancho
+/// y rápido sin comerse cargas reales: algo que se está apoyando o sacando
+/// mueve la lectura, y mientras se mueve el cero no se toca.
+#[derive(Clone, Debug, Default)]
 pub struct CeroAutomatico {
     base: [f64; N_CELDAS],
     listo: bool,
     ultimo_t_s: Option<f64>,
+    /// Cargas netas recientes con su instante, para medir si está quieta.
+    recientes: std::collections::VecDeque<(f64, f64)>,
 }
 
 impl CeroAutomatico {
@@ -179,12 +188,31 @@ impl CeroAutomatico {
     pub fn sembrar(&mut self, crudos: [f64; N_CELDAS]) {
         self.base = crudos;
         self.listo = true;
+        self.recientes.clear();
     }
 
     /// Olvida el cero: la próxima muestra vuelve a sembrarlo.
     pub fn reiniciar(&mut self) {
         self.listo = false;
         self.ultimo_t_s = None;
+        self.recientes.clear();
+    }
+
+    /// `true` si la carga se mantuvo dentro de `tolerancia` durante toda la
+    /// ventana de estabilidad.
+    fn estable(&self, tolerancia: f64) -> bool {
+        let (Some((mas_viejo, _)), Some((mas_nuevo, _))) = (self.recientes.front(), self.recientes.back()) else {
+            return false;
+        };
+        if mas_nuevo - mas_viejo < VENTANA_ESTABLE_S {
+            return false; // todavía no hay ventana completa
+        }
+        let (mut minimo, mut maximo) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (_, carga) in &self.recientes {
+            minimo = minimo.min(*carga);
+            maximo = maximo.max(*carga);
+        }
+        maximo - minimo <= tolerancia
     }
 
     /// Carga neta de cada celda, descontado el cero.
@@ -205,7 +233,22 @@ impl CeroAutomatico {
         }
         let dt = t_s - self.ultimo_t_s.unwrap_or(t_s);
         self.ultimo_t_s = Some(t_s);
+
+        // Historial de la última ventana, para saber si la lectura está quieta.
+        self.recientes.push_back((t_s, carga_neta));
+        // Se guarda un poco más que la ventana: si se podara justo en
+        // VENTANA_ESTABLE_S, el tramo retenido siempre mediría un pelo menos y
+        // la lectura nunca llegaría a contar como quieta.
+        while self.recientes.front().is_some_and(|(viejo, _)| t_s - viejo > VENTANA_ESTABLE_S * 1.5) {
+            self.recientes.pop_front();
+        }
+
         if ocupado || carga_neta.abs() > zona_cero || !(0.0..1.0).contains(&dt) {
+            return;
+        }
+        // Una carga que se está apoyando o sacando mueve la lectura: hasta que
+        // no se quede quieta, el cero no se toca.
+        if !self.estable(zona_cero / 10.0) {
             return;
         }
         // Filtro de primer orden en tiempo real, no en número de muestras: así
@@ -547,7 +590,7 @@ mod tests {
         // apoyado sobre la plataforma tiene que seguir pesando 1 kg.
         let mut cero = CeroAutomatico::default();
         let vacia = [0.0; N_CELDAS];
-        let zona = 200.0; // cuentas: equivale a 0,2 kg con 1000 cuentas/kg
+        let zona = 500.0; // cuentas: equivale a 0,5 kg con 1000 cuentas/kg
 
         let t = correr_cero(&mut cero, 0.0, 2.0, vacia, zona);
         let con_masa = [1000.0, 0.0, 0.0, 0.0];
@@ -558,9 +601,46 @@ mod tests {
     }
 
     #[test]
+    fn el_resto_que_deja_una_carga_vuelve_a_cero_solo() {
+        // Tras presionar con la mano, las celdas quedan con un resto de unos
+        // cientos de gramos (creep). Con la plataforma quieta tiene que
+        // desaparecer en unos segundos, no quedarse ahí.
+        let mut cero = CeroAutomatico::default();
+        let zona = 500.0;
+        let t = correr_cero(&mut cero, 0.0, 2.0, [0.0; N_CELDAS], zona);
+
+        let resto = [230.0, 0.0, 0.0, 0.0]; // 0,23 kg pegados
+        correr_cero(&mut cero, t, 4.0 * TAU_CERO_S, resto, zona);
+
+        let residual: f64 = cero.neto(resto).iter().sum();
+        assert!(residual.abs() < 8.0, "el resto tendría que haberse ido, quedaron {residual} cuentas");
+    }
+
+    #[test]
+    fn mientras_la_lectura_se_mueve_el_cero_no_se_toca() {
+        // Una carga apoyándose de a poco no puede ser tomada por deriva.
+        let mut cero = CeroAutomatico::default();
+        cero.sembrar([0.0; N_CELDAS]);
+        let zona = 500.0;
+
+        let mut t = 0.0;
+        let mut carga = 0.0;
+        while t < 3.0 {
+            let lectura = [carga, 0.0, 0.0, 0.0];
+            cero.actualizar(t, lectura, cero.neto(lectura).iter().sum(), zona, false);
+            carga += 1.0; // sube 80 cuentas por segundo
+            t += 1.0 / 80.0;
+        }
+
+        let lectura = [carga, 0.0, 0.0, 0.0];
+        let medido: f64 = cero.neto(lectura).iter().sum();
+        assert!((medido - carga).abs() < 1.0, "el cero se movió con la carga cambiando: {medido} vs {carga}");
+    }
+
+    #[test]
     fn el_cero_automatico_si_sigue_la_deriva_lenta() {
         let mut cero = CeroAutomatico::default();
-        let zona = 200.0;
+        let zona = 500.0;
         correr_cero(&mut cero, 0.0, 1.0, [0.0; N_CELDAS], zona);
 
         // Deriva térmica: 40 cuentas por celda, bien dentro de la zona de cero.
@@ -579,7 +659,7 @@ mod tests {
 
         let mut t = 0.0;
         while t < 30.0 {
-            cero.actualizar(t, persona, 80_000.0, 200.0, true);
+            cero.actualizar(t, persona, 80_000.0, 500.0, true);
             t += 1.0 / 80.0;
         }
 
@@ -592,9 +672,9 @@ mod tests {
         // no puede traducirse en un salto del cero.
         let mut cero = CeroAutomatico::default();
         cero.sembrar([0.0; N_CELDAS]);
-        cero.actualizar(0.0, [0.0; N_CELDAS], 0.0, 200.0, false);
+        cero.actualizar(0.0, [0.0; N_CELDAS], 0.0, 500.0, false);
         let salto = [100.0; N_CELDAS];
-        cero.actualizar(600.0, salto, 400.0, 200.0, false);
+        cero.actualizar(600.0, salto, 400.0, 500.0, false);
         assert_eq!(cero.neto(salto), salto, "un dt enorme no puede mover el cero de golpe");
     }
 

@@ -54,9 +54,14 @@ const ESPERA_REPINTADO_CONECTADO: Duration = Duration::from_millis(200);
 const ESPERA_REPINTADO_OCIOSO: Duration = Duration::from_millis(500);
 
 /// Zona de cero del seguimiento automático, como fracción del umbral de
-/// presencia. Con el umbral en 10 kg son 0,2 kg: alcanza para la deriva del
-/// sensor y no llega a tapar una masa apoyada.
-const FRACCION_ZONA_CERO: f64 = 0.02;
+/// presencia. Con el umbral en 10 kg son 0,5 kg: alcanza para la deriva del
+/// sensor y para el resto que dejan las celdas después de una carga, y queda
+/// por debajo del patrón de 1 kg, que no se puede tragar.
+const FRACCION_ZONA_CERO: f64 = 0.05;
+
+/// Por debajo de esto la balanza muestra un guion en vez de un número: son
+/// gramos de ruido alrededor del cero, no una medición.
+const ZONA_MUERTA_KG: f64 = 0.008;
 
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
@@ -952,7 +957,7 @@ impl PosturografoxApp {
                             self.modo_paciente = false;
                         }
                         ui.label(egui::RichText::new("ESC para volver").small().color(Color32::from_gray(150)));
-                        if self.config.calibrado_en_kg && self.recibio_muestras {
+                        if self.config.calibrado_en_kg && self.peso_kg.abs() >= ZONA_MUERTA_KG {
                             ui.label(
                                 egui::RichText::new(format!("{:.1} kg", self.peso_kg))
                                     .size(22.0)
@@ -1026,19 +1031,31 @@ impl PosturografoxApp {
                     // guion es solo para cuando todavía no llegó ninguna
                     // lectura. Con un piso de 1 kg, un patrón de 1 kg no se
                     // veía nunca.
-                    let texto =
-                        if self.recibio_muestras { format!("{:.2} kg", self.peso_kg) } else { "— kg".to_string() };
+                    let texto = if !self.recibio_muestras || self.peso_kg.abs() < ZONA_MUERTA_KG {
+                        "— kg".to_string()
+                    } else {
+                        format!("{:.2} kg", self.peso_kg)
+                    };
                     ui.label(egui::RichText::new(texto).size(34.0).strong().color(NARANJA.gamma_multiply(0.85)));
                     let detalle = if !self.recibio_muestras {
                         "esperando lecturas"
                     } else if self.ocupado {
                         "sobre la plataforma"
-                    } else if self.peso_kg.abs() >= self.config.umbral_kg * FRACCION_ZONA_CERO {
+                    } else if self.peso_kg.abs() >= ZONA_MUERTA_KG {
                         "carga apoyada"
                     } else {
                         "plataforma libre"
                     };
-                    ui.label(egui::RichText::new(detalle).small().color(Color32::from_gray(130)));
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(detalle).small().color(Color32::from_gray(130)));
+                        if ui
+                            .small_button("Poner a cero")
+                            .on_hover_text("Toma la lectura actual como cero, con la plataforma vacía")
+                            .clicked()
+                        {
+                            self.tara_software(false);
+                        }
+                    });
                 } else {
                     // Sin calibrar no hay kilos posibles: las celdas entregan
                     // cuentas del ADC. Antes esto no se decía en ninguna parte
