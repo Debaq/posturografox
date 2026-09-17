@@ -3,20 +3,19 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::datos::carpeta_sesiones;
 use crate::estabilometria::{Condicion, MetricasBalance, Superficie};
-
-const CARPETA_SESIONES: &str = "sesiones";
 
 fn sanitizar(texto: &str) -> String {
     let limpio: String = texto.trim().chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
     if limpio.is_empty() { "anonimo".to_string() } else { limpio }
 }
 
-/// Escribe `sesiones/sesion_<paciente>_<superficie>_<condicion>_<epoch>.csv`
-/// (relativo al directorio de trabajo) y devuelve la ruta final.
+/// Escribe la sesión en la carpeta de datos del usuario (ver `src/datos.rs`)
+/// y devuelve la ruta final.
 pub fn exportar_csv(
     paciente: &str,
     condicion: Condicion,
@@ -26,11 +25,28 @@ pub fn exportar_csv(
     metricas: &MetricasBalance,
     registro: &[[f64; 3]],
 ) -> io::Result<PathBuf> {
-    fs::create_dir_all(CARPETA_SESIONES)?;
+    exportar_csv_en(&carpeta_sesiones(), paciente, condicion, superficie, ancho_cm, prof_cm, metricas, registro)
+}
+
+/// Igual que `exportar_csv`, pero con la carpeta de destino explícita: así
+/// los tests escriben en un directorio temporal en vez de ensuciar el repo,
+/// y más adelante se puede ofrecer "Guardar como..." sin tocar esta lógica.
+#[allow(clippy::too_many_arguments)]
+pub fn exportar_csv_en(
+    carpeta: &Path,
+    paciente: &str,
+    condicion: Condicion,
+    superficie: Superficie,
+    ancho_cm: f64,
+    prof_cm: f64,
+    metricas: &MetricasBalance,
+    registro: &[[f64; 3]],
+) -> io::Result<PathBuf> {
+    fs::create_dir_all(carpeta)?;
 
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     let nombre = format!("sesion_{}_{}_{}_{}.csv", sanitizar(paciente), superficie.slug(), condicion.slug(), epoch);
-    let ruta = PathBuf::from(CARPETA_SESIONES).join(nombre);
+    let ruta = carpeta.join(nombre);
 
     let mut archivo = fs::File::create(&ruta)?;
     writeln!(archivo, "# Posturografox - registro de sesión")?;
@@ -81,7 +97,9 @@ mod tests {
         };
         let registro = [[0.0, 0.0, 0.0], [0.5, 0.1, -0.1], [1.0, 0.2, -0.2]];
 
-        let ruta = exportar_csv(
+        let carpeta = std::env::temp_dir().join("posturografox_test_exportar");
+        let ruta = exportar_csv_en(
+            &carpeta,
             "Test Paciente",
             Condicion::OjosCerrados,
             Superficie::Espuma,

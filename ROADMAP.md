@@ -34,7 +34,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R7 · Persistencia.** Guardar y restaurar toda la configuración entre
   sesiones con `eframe::App::save` + `serde`. Hoy cada arranque vuelve a
   ganancias 1.0 y plataforma 40×40.
-- [ ] **R8 · Exportación fuera del directorio de trabajo.** Escribir en el
+- [x] **R8 · Exportación fuera del directorio de trabajo.** Escribir en el
   directorio de datos del usuario (o diálogo de guardado) en vez de
   `./sesiones`, que falla en Windows o con permisos de solo lectura.
 - [ ] **R9 · Tests de exportación aislados.** Usar directorio temporal para que

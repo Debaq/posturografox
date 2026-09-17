@@ -204,25 +204,26 @@ fn obtener_audio<'a>(cache: &'a mut Option<Audio>, intentado: &mut bool) -> Opti
     cache.as_mut()
 }
 
-/// Dónde se guarda el mejor puntaje entre sesiones: `~/.local/share/posturografox/`.
-fn ruta_mejor_puntaje() -> Option<std::path::PathBuf> {
-    let mut ruta = std::path::PathBuf::from(std::env::var_os("HOME")?);
-    ruta.push(".local/share/posturografox");
-    Some(ruta)
+/// El mejor puntaje vive en la carpeta de datos del usuario, la misma que
+/// usan las sesiones exportadas (ver `src/datos.rs`). Antes se armaba a mano
+/// con `$HOME`, así que en Windows no se guardaba nunca.
+fn ruta_mejor_puntaje() -> std::path::PathBuf {
+    crate::datos::carpeta_datos().join("mejor_puntaje.txt")
 }
 
 fn cargar_mejor_puntaje() -> f32 {
-    ruta_mejor_puntaje()
-        .map(|dir| dir.join("mejor_puntaje.txt"))
-        .and_then(|ruta| std::fs::read_to_string(ruta).ok())
+    std::fs::read_to_string(ruta_mejor_puntaje())
+        .ok()
         .and_then(|texto| texto.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite() && *v >= 0.0)
         .unwrap_or(0.0)
 }
 
 fn guardar_mejor_puntaje(valor: f32) {
-    let Some(dir) = ruta_mejor_puntaje() else { return };
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = std::fs::write(dir.join("mejor_puntaje.txt"), format!("{valor}"));
+    let ruta = ruta_mejor_puntaje();
+    let Some(dir) = ruta.parent() else { return };
+    if std::fs::create_dir_all(dir).is_ok() {
+        let _ = std::fs::write(&ruta, format!("{valor}"));
     }
 }
 

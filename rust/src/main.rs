@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod datos;
 mod descubrimiento;
 mod estabilometria;
 mod exportar;
