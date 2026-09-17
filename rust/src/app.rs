@@ -15,6 +15,7 @@ use std::time::Duration;
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
+use crate::config::Config;
 use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::estabilometria::{
     Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
@@ -30,11 +31,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
-const VENTANA_TIEMPO_S: f64 = 20.0;
-const MUESTRAS_TARA_SW: usize = 20;
-const DEBOUNCE_DETECCION: u32 = 5;
-const ESPACIADO_PUNTOS_DEFAULT: usize = 8;
-const ETIQUETAS: [&str; 4] = ["fd", "fi", "bd", "bi"];
 
 // ── Paleta: pasteles contrastantes sobre fondo claro (look clínico) ─────────
 const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML / conexión
@@ -100,6 +96,10 @@ fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
 }
 
 pub struct PosturografoxApp {
+    // Todas las opciones ajustables del programa (ver src/config.rs)
+    config: Config,
+    mostrar_config: bool,
+
     // Conexión
     puertos: Vec<String>,
     puerto_seleccionado: Option<String>,
@@ -108,18 +108,12 @@ pub struct PosturografoxApp {
     // Búsqueda automática del puerto al arrancar (ver src/descubrimiento.rs)
     descubrimiento: Option<mpsc::Receiver<EventoDescubrimiento>>,
 
-    // Calibración: offset (tara por software) y ganancia por canal (fd,fi,bd,bi)
+    // Calibración: offset (tara por software); la ganancia por canal vive en `config`
     offset: [f64; 4],
-    ganancia: [f64; 4],
     buffer_crudo: VecDeque<[f64; 4]>,
     buffer_arriba: VecDeque<[f64; 4]>, // solo muestras ya sobre el umbral
 
-    // Geometría de la plataforma
-    ancho_cm: f64,
-    prof_cm: f64,
-
     // Detección automática de subida/bajada
-    umbral: f64,
     ocupado: bool,
     contador_arriba: u32,
     contador_abajo: u32,
@@ -130,7 +124,6 @@ pub struct PosturografoxApp {
     ap_buf: VecDeque<f64>,
     trazo_x: VecDeque<f64>,
     trazo_y: VecDeque<f64>,
-    espaciado_puntos: usize,
     ultimo_ml: f64,
     ultimo_ap: f64,
     ultimos_pct: [f64; 4], // % de carga por celda (fd,fi,bd,bi), para biofeedback en vivo
@@ -165,7 +158,10 @@ impl Default for PosturografoxApp {
     fn default() -> Self {
         let puertos = puertos_usables();
         let puerto_seleccionado = puertos.first().cloned();
+        let config = Config::default();
         Self {
+            mostrar_config: false,
+
             puertos,
             puerto_seleccionado,
             conexion: None,
@@ -173,14 +169,9 @@ impl Default for PosturografoxApp {
             descubrimiento: Some(descubrimiento::iniciar()),
 
             offset: [0.0; 4],
-            ganancia: [1.0; 4],
-            buffer_crudo: VecDeque::with_capacity(MUESTRAS_TARA_SW),
-            buffer_arriba: VecDeque::with_capacity(MUESTRAS_TARA_SW),
+            buffer_crudo: VecDeque::with_capacity(config.muestras_tara),
+            buffer_arriba: VecDeque::with_capacity(config.muestras_tara),
 
-            ancho_cm: 40.0,
-            prof_cm: 40.0,
-
-            umbral: 20_000.0,
             ocupado: false,
             contador_arriba: 0,
             contador_abajo: 0,
@@ -190,7 +181,7 @@ impl Default for PosturografoxApp {
             ap_buf: VecDeque::with_capacity(MAX_MUESTRAS_TIEMPO),
             trazo_x: VecDeque::with_capacity(MAX_PUNTOS_TRAZO),
             trazo_y: VecDeque::with_capacity(MAX_PUNTOS_TRAZO),
-            espaciado_puntos: ESPACIADO_PUNTOS_DEFAULT,
+            config,
             ultimo_ml: 0.0,
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
@@ -310,14 +301,14 @@ impl PosturografoxApp {
     /// lista para el siguiente. Debounce de N muestras contra ruido puntual.
     fn procesar_deteccion(&mut self, crudos: [f64; 4]) {
         let suma_cruda: f64 = crudos.iter().sum();
-        if suma_cruda.abs() >= self.umbral {
+        if suma_cruda.abs() >= self.config.umbral {
             self.buffer_arriba.push_back(crudos);
-            if self.buffer_arriba.len() > MUESTRAS_TARA_SW {
+            if self.buffer_arriba.len() > self.config.muestras_tara {
                 self.buffer_arriba.pop_front();
             }
             self.contador_arriba += 1;
             self.contador_abajo = 0;
-            if !self.ocupado && self.contador_arriba >= DEBOUNCE_DETECCION {
+            if !self.ocupado && self.contador_arriba >= self.config.debounce {
                 self.ocupado = true;
                 self.tara_software(true);
                 self.reiniciar_sesion();
@@ -327,7 +318,7 @@ impl PosturografoxApp {
             self.buffer_arriba.clear();
             self.contador_abajo += 1;
             self.contador_arriba = 0;
-            if self.ocupado && self.contador_abajo >= DEBOUNCE_DETECCION {
+            if self.ocupado && self.contador_abajo >= self.config.debounce {
                 self.ocupado = false;
                 self.cerrar_sesion();
                 self.estado = "Plataforma libre: sesión reiniciada".to_string();
@@ -337,19 +328,19 @@ impl PosturografoxApp {
 
     fn procesar_muestra(&mut self, m: Muestra) {
         self.buffer_crudo.push_back(m.crudos);
-        if self.buffer_crudo.len() > MUESTRAS_TARA_SW {
+        if self.buffer_crudo.len() > self.config.muestras_tara {
             self.buffer_crudo.pop_front();
         }
         self.procesar_deteccion(m.crudos);
 
-        let vals: [f64; 4] = std::array::from_fn(|i| (m.crudos[i] - self.offset[i]) * self.ganancia[i]);
+        let vals: [f64; 4] = std::array::from_fn(|i| (m.crudos[i] - self.offset[i]) * self.config.ganancia[i]);
         let suma: f64 = vals.iter().sum();
         // Con la plataforma vacía `suma` es puro ruido cerca de cero: dividir
         // por eso amplifica cualquier ruidito a un COP que salta como loco.
         // Solo calculamos el COP real mientras hay alguien parado (`ocupado`).
         let (cop_ml, cop_ap) = if self.ocupado && suma != 0.0 {
-            let ml = ((vals[0] + vals[2]) - (vals[1] + vals[3])) / suma * (self.ancho_cm / 2.0);
-            let ap = ((vals[0] + vals[1]) - (vals[2] + vals[3])) / suma * (self.prof_cm / 2.0);
+            let ml = ((vals[0] + vals[2]) - (vals[1] + vals[3])) / suma * (self.config.ancho_cm / 2.0);
+            let ap = ((vals[0] + vals[1]) - (vals[2] + vals[3])) / suma * (self.config.prof_cm / 2.0);
             self.ultimos_pct = vals.map(|v| v / suma * 100.0);
             (ml, ap)
         } else {
@@ -435,45 +426,40 @@ impl PosturografoxApp {
                 }
             });
 
-            tarjeta(ui, "PLATAFORMA", VERDE, |ui| {
-                ui.label("Ancho");
-                ui.add(egui::DragValue::new(&mut self.ancho_cm).range(1.0..=500.0).speed(0.5).suffix(" cm"));
-                ui.label("Prof.");
-                ui.add(egui::DragValue::new(&mut self.prof_cm).range(1.0..=500.0).speed(0.5).suffix(" cm"));
-            });
-
             tarjeta(ui, "CALIBRACIÓN", VERDE, |ui| {
                 if ui
                     .button("Tara")
                     .on_hover_text(format!(
-                        "Promedia las últimas {MUESTRAS_TARA_SW} muestras crudas y las fija como cero"
+                        "Promedia las últimas {} muestras crudas y las fija como cero",
+                        self.config.muestras_tara
                     ))
                     .clicked()
                 {
                     self.tara_software(false);
                 }
-                for (i, etq) in ETIQUETAS.iter().enumerate() {
-                    ui.label(etq.to_uppercase());
-                    ui.add(
-                        egui::DragValue::new(&mut self.ganancia[i])
-                            .range(0.0001..=1000.0)
-                            .speed(0.01)
-                            .fixed_decimals(3),
-                    );
-                }
-            });
-
-            tarjeta(ui, "DETECCIÓN AUTOMÁTICA", LILA, |ui| {
-                ui.label("Umbral");
-                ui.add(egui::DragValue::new(&mut self.umbral).range(0.0..=10_000_000.0).speed(100.0));
-                ui.label("Espaciado");
-                ui.add(egui::DragValue::new(&mut self.espaciado_puntos).range(1..=200));
             });
 
             tarjeta(ui, "TRAZO", CORAL, |ui| {
                 if ui.button("Limpiar").clicked() {
                     self.limpiar_trazo();
                 }
+            });
+
+            // Un solo acceso a todas las opciones del programa: geometría,
+            // ganancias, umbrales, gráficos y modo juego (ver src/config.rs).
+            tarjeta(ui, "AJUSTES", VERDE, |ui| {
+                if ui
+                    .button("⚙ Configuración")
+                    .on_hover_text("Plataforma, calibración, detección, gráficos y modo juego")
+                    .clicked()
+                {
+                    self.mostrar_config = !self.mostrar_config;
+                }
+                ui.label(
+                    egui::RichText::new(format!("{:.0}×{:.0} cm", self.config.ancho_cm, self.config.prof_cm))
+                        .small()
+                        .color(Color32::from_gray(140)),
+                );
             });
 
             tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
@@ -586,8 +572,8 @@ impl PosturografoxApp {
             &self.paciente,
             self.ultima_condicion,
             self.ultima_superficie,
-            self.ancho_cm,
-            self.prof_cm,
+            self.config.ancho_cm,
+            self.config.prof_cm,
             &metricas,
             &self.ultimo_registro,
         ) {
@@ -664,8 +650,8 @@ impl PosturografoxApp {
 
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
         let margen = 1.2;
-        let x_lim = self.ancho_cm / 2.0 * margen;
-        let y_lim = self.prof_cm / 2.0 * margen;
+        let x_lim = self.config.ancho_cm / 2.0 * margen;
+        let y_lim = self.config.prof_cm / 2.0 * margen;
 
         let xs: Vec<f64> = self.trazo_x.iter().copied().collect();
         let ys: Vec<f64> = self.trazo_y.iter().copied().collect();
@@ -684,10 +670,10 @@ impl PosturografoxApp {
         let fraccion = Arc::new(fraccion);
 
         let trazo: PlotPoints = xs.iter().zip(ys.iter()).map(|(&x, &y)| [x, y]).collect();
-        let paso = self.espaciado_puntos.max(1);
+        let paso = self.config.espaciado_puntos.max(1);
         let puntos: PlotPoints = xs.iter().zip(ys.iter()).step_by(paso).map(|(&x, &y)| [x, y]).collect();
         let actual: PlotPoints = vec![[self.ultimo_ml, self.ultimo_ap]].into();
-        let elipse = ajustar_elipse95(&xs, &ys);
+        let elipse = if self.config.mostrar_elipse { ajustar_elipse95(&xs, &ys) } else { None };
 
         Plot::new("plot_cop")
             .height(altura)
@@ -728,7 +714,7 @@ impl PosturografoxApp {
                     Points::new("COP", actual).shape(MarkerShape::Circle).filled(true).radius(7.0).color(CORAL),
                 );
 
-                if let Some(obj) = self.ejercicio.objetivo_actual(self.ancho_cm, self.prof_cm) {
+                if let Some(obj) = self.ejercicio.objetivo_actual(self.config.ancho_cm, self.config.prof_cm) {
                     let anillo: PlotPoints = vec![[obj.x, obj.y]].into();
                     plot_ui.points(
                         Points::new("Objetivo", anillo)
@@ -753,7 +739,7 @@ impl PosturografoxApp {
     }
 
     fn plot_tiempo(&self, ui: &mut egui::Ui, altura: f32) {
-        let limite = self.ancho_cm.max(self.prof_cm) / 2.0 * 1.2;
+        let limite = self.config.ancho_cm.max(self.config.prof_cm) / 2.0 * 1.2;
         let t_ultimo = self.t_buf.back().copied().unwrap_or(0.0);
 
         let ml: PlotPoints = self.t_buf.iter().zip(self.ml_buf.iter()).map(|(&t, &v)| [t, v]).collect();
@@ -767,8 +753,8 @@ impl PosturografoxApp {
             .allow_drag(false)
             .show(ui, |plot_ui| {
                 plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                    [t_ultimo - VENTANA_TIEMPO_S, -limite],
-                    [t_ultimo.max(VENTANA_TIEMPO_S), limite],
+                    [t_ultimo - self.config.ventana_tiempo_s, -limite],
+                    [t_ultimo.max(self.config.ventana_tiempo_s), limite],
                 ));
                 plot_ui.line(Line::new("ML", ml).color(AZUL).width(1.5));
                 plot_ui.line(Line::new("AP", ap).color(NARANJA).width(1.5));
@@ -830,10 +816,13 @@ impl eframe::App for PosturografoxApp {
             let entrada = juego::EntradaJuego {
                 cop_ml: self.ultimo_ml,
                 cop_ap: self.ultimo_ap,
-                ancho_cm: self.ancho_cm,
-                prof_cm: self.prof_cm,
+                ancho_cm: self.config.ancho_cm,
+                prof_cm: self.config.prof_cm,
                 conectado: self.conexion.is_some(),
                 dt: ui.input(|i| i.stable_dt),
+                duracion_partida_s: self.config.duracion_partida_s,
+                volumen_musica: self.config.volumen_musica,
+                volumen_efectos: self.config.volumen_efectos,
             };
             egui::CentralPanel::default().frame(egui::Frame::new().fill(TARJETA_BG)).show(ui, |ui| {
                 if juego::mostrar(ui, &mut self.estado_juego, entrada) {
@@ -846,7 +835,7 @@ impl eframe::App for PosturografoxApp {
 
         if self.ocupado {
             let dt = ui.input(|i| i.stable_dt);
-            self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, self.ancho_cm, self.prof_cm, dt);
+            self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, self.config.ancho_cm, self.config.prof_cm, dt);
         }
 
         let fondo = |margen| egui::Frame::new().fill(LIENZO).inner_margin(margen);
@@ -873,6 +862,8 @@ impl eframe::App for PosturografoxApp {
                 });
             });
         });
+
+        crate::config::ventana(ui.ctx(), &mut self.config, &mut self.mostrar_config, VERDE);
 
         egui::CentralPanel::default().frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             let alto_total = ui.available_height();

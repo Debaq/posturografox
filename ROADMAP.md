@@ -26,7 +26,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 1 — Configuración y persistencia
 
-- [ ] **R6 · Zona de configuración.** Un único lugar (`config.rs` + panel
+- [x] **R6 · Zona de configuración.** Un único lugar (`config.rs` + panel
   "Configuración") con *todas* las opciones del programa: geometría de la
   plataforma, calibración, umbral de detección, trazo, duración del ensayo
   clínico y **duración de la partida del modo juego**. Hoy están repartidas

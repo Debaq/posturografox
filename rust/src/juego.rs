@@ -73,6 +73,10 @@ pub struct EntradaJuego {
     pub prof_cm: f64,
     pub conectado: bool,
     pub dt: f32,
+    // Opciones del juego, definidas en la zona de configuración (src/config.rs).
+    pub duracion_partida_s: f32,
+    pub volumen_musica: f32,
+    pub volumen_efectos: f32,
 }
 
 // Paleta propia del modo juego (independiente de la vista clínica).
@@ -96,8 +100,6 @@ const SONIDO_COMER: &[u8] = include_bytes!("../assets/musica/comer.ogg");
 const SONIDO_CAIDA: &[u8] = include_bytes!("../assets/musica/caida.ogg");
 const SONIDO_VICTORIA: &[u8] = include_bytes!("../assets/musica/victoria.ogg");
 const SONIDO_DERROTA: &[u8] = include_bytes!("../assets/musica/derrota.ogg");
-const VOLUMEN_MUSICA: f32 = 0.35;
-const VOLUMEN_EFECTOS: f32 = 0.6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pista {
@@ -113,12 +115,32 @@ struct Audio {
     salida: rodio::OutputStreamHandle,
     musica: Option<rodio::Sink>,
     pista_actual: Option<Pista>,
+    // Volúmenes vigentes, sincronizados cada frame con la configuración.
+    volumen_musica: f32,
+    volumen_efectos: f32,
 }
 
 impl Audio {
     fn nueva() -> Option<Self> {
         let (flujo, salida) = rodio::OutputStream::try_default().ok()?;
-        Some(Self { _flujo: flujo, salida, musica: None, pista_actual: None })
+        Some(Self {
+            _flujo: flujo,
+            salida,
+            musica: None,
+            pista_actual: None,
+            volumen_musica: crate::config::defecto::VOLUMEN_MUSICA,
+            volumen_efectos: crate::config::defecto::VOLUMEN_EFECTOS,
+        })
+    }
+
+    /// Toma los volúmenes de la configuración y los aplica también a la
+    /// pista que ya está sonando, para que el cambio se escuche al toque.
+    fn ajustar_volumenes(&mut self, musica: f32, efectos: f32) {
+        self.volumen_musica = musica.clamp(0.0, 1.0);
+        self.volumen_efectos = efectos.clamp(0.0, 1.0);
+        if let Some(sink) = &self.musica {
+            sink.set_volume(self.volumen_musica);
+        }
     }
 
     fn bytes_de(pista: Pista) -> &'static [u8] {
@@ -138,7 +160,7 @@ impl Audio {
         let intento =
             (rodio::Sink::try_new(&self.salida), rodio::Decoder::new(std::io::Cursor::new(Self::bytes_de(pista))));
         if let (Ok(sink), Ok(fuente)) = intento {
-            sink.set_volume(VOLUMEN_MUSICA);
+            sink.set_volume(self.volumen_musica);
             sink.append(fuente);
             self.musica = Some(sink); // dropea el sink anterior, que corta esa pista solo
             self.pista_actual = Some(pista);
@@ -165,7 +187,7 @@ impl Audio {
     fn reproducir_efecto(&self, bytes: &'static [u8]) {
         let intento = (rodio::Sink::try_new(&self.salida), rodio::Decoder::new(std::io::Cursor::new(bytes)));
         if let (Ok(sink), Ok(fuente)) = intento {
-            sink.set_volume(VOLUMEN_EFECTOS);
+            sink.set_volume(self.volumen_efectos);
             sink.append(fuente);
             sink.detach();
         }
@@ -413,6 +435,10 @@ struct Partida {
     pausa: f32,
     /// Cuenta regresiva de la partida completa; en 0 se gana.
     tiempo_restante: f32,
+    /// Cuánto duraba esta partida al empezar (de la configuración). Se guarda
+    /// acá para que cambiar la opción a mitad de partida no altere la que ya
+    /// está en curso, y para que la pantalla de victoria diga el tiempo real.
+    duracion_s: f32,
     gano: bool,
     /// Polvito bajo las patas del zorro mientras corre (solo estético).
     particulas: Vec<Particula>,
@@ -429,10 +455,6 @@ struct Particula {
     vida_total: f32,
 }
 
-/// Cuánto dura una partida completa. Si el reloj llega a 0 sin haber
-/// perdido, se muestra la pantalla de victoria.
-const DURACION_PARTIDA_SEGUNDOS: f32 = 60.0;
-
 /// Segundos de la cuenta atrás en la pantalla de game over antes de
 /// reintentar solo.
 const REINICIO_SEGUNDOS: f32 = 6.0;
@@ -446,7 +468,8 @@ const REPETICIONES_SONIDO_FIN: u8 = 3;
 const INTERVALO_SONIDO_FIN: f32 = 2.0;
 
 impl Partida {
-    fn nueva() -> Self {
+    /// `duracion_s` viene de la zona de configuración (ver src/config.rs).
+    fn nueva(duracion_s: f32) -> Self {
         Self {
             fox_x: 0.0,
             obstaculos: Vec::new(),
@@ -462,7 +485,8 @@ impl Partida {
             temporizador_sonido_fin: 0.0,
             vidas: Vec::new(),
             pausa: 0.0,
-            tiempo_restante: DURACION_PARTIDA_SEGUNDOS,
+            tiempo_restante: duracion_s,
+            duracion_s,
             gano: false,
             particulas: Vec::new(),
             temporizador_polvo: 0.0,
@@ -530,6 +554,9 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     let winwin =
         obtener_sprite(ui, &mut estado.sprite_winwin, "winwin_sprite", WINWIN_BYTES, WINWIN_COLUMNAS, WINWIN_FILAS);
     let mut audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado);
+    if let Some(audio) = audio.as_deref_mut() {
+        audio.ajustar_volumenes(entrada.volumen_musica, entrada.volumen_efectos);
+    }
 
     if !entrada.conectado {
         estado.partida = None; // evita que arranque con velocidad "gratis" mientras no hay lecturas
@@ -545,7 +572,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         return salir_tecla;
     }
 
-    let partida = estado.partida.get_or_insert_with(Partida::nueva);
+    let partida = estado.partida.get_or_insert_with(|| Partida::nueva(entrada.duracion_partida_s));
 
     if partida.game_over {
         if let Some(audio) = audio.as_deref_mut() {
@@ -560,7 +587,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
             partida.temporizador_reinicio.max(0.0),
         );
         if reintentar || partida.temporizador_reinicio <= 0.0 {
-            estado.partida = Some(Partida::nueva());
+            estado.partida = Some(Partida::nueva(entrada.duracion_partida_s));
         }
         ui.ctx().request_repaint();
         return salir_tecla || salir_boton;
@@ -593,9 +620,10 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
             partida.puntaje,
             estado.puntaje_maximo,
             partida.temporizador_reinicio.max(0.0),
+            partida.duracion_s,
         );
         if reintentar || partida.temporizador_reinicio <= 0.0 {
-            estado.partida = Some(Partida::nueva());
+            estado.partida = Some(Partida::nueva(entrada.duracion_partida_s));
         }
         return salir_tecla || salir_boton;
     }
@@ -1111,6 +1139,7 @@ fn dibujar_victoria(
     puntaje: f32,
     puntaje_maximo: f32,
     segundos_reinicio: f32,
+    duracion_partida_s: f32,
 ) -> (bool, bool) {
     let rect = ui.available_rect_before_wrap();
     let painter = ui.painter();
@@ -1142,7 +1171,10 @@ fn dibujar_victoria(
         );
     };
 
-    texto_centrado("🏆 ¡AGUANTASTE LOS 2 MINUTOS!", 0.07, (alto * 0.028).clamp(15.0, 22.0), DORADO);
+    // El texto sale de la duración real de la partida (configurable), así no
+    // puede contradecir a lo que se jugó.
+    let titulo = format!("🏆 ¡AGUANTASTE {}!", crate::config::duracion_legible(duracion_partida_s).to_uppercase());
+    texto_centrado(&titulo, 0.07, (alto * 0.028).clamp(15.0, 22.0), DORADO);
 
     // Celebración en loop mientras dura la pantalla.
     let transcurrido = REINICIO_SEGUNDOS - segundos_reinicio;
