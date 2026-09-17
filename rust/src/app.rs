@@ -424,6 +424,9 @@ pub struct PosturografoxApp {
     /// Peso medido sobre la plataforma, en kg (0 si todavía no hay
     /// calibración con masa conocida).
     peso_kg: f64,
+    /// Ya llegó al menos una lectura desde que se conectó.
+    recibio_muestras: bool,
+
     /// Cero de la balanza: lo que marcan las celdas con la plataforma vacía.
     /// Se sigue solo, despacio, para que la deriva térmica del HX711 no se
     /// sume al peso (ver `calibracion::CeroAutomatico`).
@@ -512,6 +515,7 @@ impl Default for PosturografoxApp {
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
             peso_kg: 0.0,
+            recibio_muestras: false,
             cero: calibracion::CeroAutomatico::default(),
 
             sesion_actual: Vec::new(),
@@ -761,6 +765,7 @@ impl PosturografoxApp {
 
     fn procesar_muestra(&mut self, m: Muestra) {
         self.muestras_perdidas += m.perdidas;
+        self.recibio_muestras = true;
         if let Some(asistente) = &mut self.asistente {
             asistente.alimentar(m.t, m.crudos, self.config.masa_calibracion_kg);
         }
@@ -841,6 +846,7 @@ impl PosturografoxApp {
             EventoSerie::Conectado => {
                 self.estado = "Conectado".to_string();
                 self.muestras_perdidas = 0;
+                self.recibio_muestras = false;
                 self.cero.reiniciar(); // se siembra con la primera muestra
                 // Preguntar el estado del firmware: modo, calibración y tara.
                 if let Some(c) = &mut self.conexion {
@@ -946,7 +952,7 @@ impl PosturografoxApp {
                             self.modo_paciente = false;
                         }
                         ui.label(egui::RichText::new("ESC para volver").small().color(Color32::from_gray(150)));
-                        if self.config.calibrado_en_kg && self.ocupado {
+                        if self.config.calibrado_en_kg && self.recibio_muestras {
                             ui.label(
                                 egui::RichText::new(format!("{:.1} kg", self.peso_kg))
                                     .size(22.0)
@@ -1016,17 +1022,23 @@ impl PosturografoxApp {
         tarjeta(ui, "PESO", NARANJA, |ui| {
             ui.vertical(|ui| {
                 if self.config.calibrado_en_kg {
-                    let texto = if self.ocupado || self.peso_kg.abs() > 1.0 {
-                        format!("{:.1} kg", self.peso_kg)
-                    } else {
-                        "— kg".to_string()
-                    };
+                    // Una balanza muestra lo que mide, sea 1 kg o 90: el
+                    // guion es solo para cuando todavía no llegó ninguna
+                    // lectura. Con un piso de 1 kg, un patrón de 1 kg no se
+                    // veía nunca.
+                    let texto =
+                        if self.recibio_muestras { format!("{:.2} kg", self.peso_kg) } else { "— kg".to_string() };
                     ui.label(egui::RichText::new(texto).size(34.0).strong().color(NARANJA.gamma_multiply(0.85)));
-                    ui.label(
-                        egui::RichText::new(if self.ocupado { "sobre la plataforma" } else { "plataforma libre" })
-                            .small()
-                            .color(Color32::from_gray(130)),
-                    );
+                    let detalle = if !self.recibio_muestras {
+                        "esperando lecturas"
+                    } else if self.ocupado {
+                        "sobre la plataforma"
+                    } else if self.peso_kg.abs() >= self.config.umbral_kg * FRACCION_ZONA_CERO {
+                        "carga apoyada"
+                    } else {
+                        "plataforma libre"
+                    };
+                    ui.label(egui::RichText::new(detalle).small().color(Color32::from_gray(130)));
                 } else {
                     // Sin calibrar no hay kilos posibles: las celdas entregan
                     // cuentas del ADC. Antes esto no se decía en ninguna parte
