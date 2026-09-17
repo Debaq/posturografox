@@ -91,7 +91,7 @@ pub fn de_paciente<'a>(historial: &'a [Sesion], paciente: &str) -> Vec<&'a Sesio
     let buscado = paciente.trim().to_lowercase();
     let mut encontradas: Vec<&Sesion> =
         historial.iter().filter(|s| s.paciente.trim().to_lowercase() == buscado).collect();
-    encontradas.sort_by(|a, b| b.epoch_s.cmp(&a.epoch_s));
+    encontradas.sort_by_key(|s| std::cmp::Reverse(s.epoch_s));
     encontradas
 }
 
