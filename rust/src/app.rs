@@ -23,6 +23,7 @@ use crate::estabilometria::{
 };
 use crate::exportar::exportar_csv;
 use crate::filtro::filtrar_registro;
+use crate::historial;
 use crate::juego;
 use crate::limites;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
@@ -145,6 +146,25 @@ enum ProgresoEnsayo {
     Completo,
 }
 
+/// Fecha legible a partir de un epoch en segundos, sin depender de una
+/// biblioteca de calendario: conversión civil desde días de Unix.
+fn fecha_legible(epoch_s: u64) -> String {
+    let dias = (epoch_s / 86_400) as i64;
+    let segundos_del_dia = epoch_s % 86_400;
+    // Algoritmo de Howard Hinnant (civil_from_days).
+    let z = dias + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let anio = if m <= 2 { y + 1 } else { y };
+    format!("{anio:04}-{m:02}-{d:02} {:02}:{:02}", segundos_del_dia / 3600, (segundos_del_dia % 3600) / 60)
+}
+
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
     buf.push_back(valor);
     if buf.len() > max {
@@ -226,6 +246,11 @@ pub struct PosturografoxApp {
     // funcionando para mirar el COP en vivo, pero no pisa el paso del examen.
     ctsib_armado: bool,
 
+    /// Historial de sesiones en disco (ver src/historial.rs). Se carga al
+    /// abrir la ventana y se refresca al archivar una sesión nueva.
+    historial: Vec<historial::Sesion>,
+    mostrar_historial: bool,
+
     // Ejercicio de límites de estabilidad (ver src/limites.rs)
     ejercicio: limites::EjercicioLimites,
 
@@ -285,6 +310,9 @@ impl Default for PosturografoxApp {
             superficie: Superficie::default(),
             resultados_ctsib: HashMap::new(),
             ctsib_armado: false,
+
+            historial: Vec::new(),
+            mostrar_historial: false,
 
             ejercicio: limites::EjercicioLimites::default(),
 
@@ -416,6 +444,15 @@ impl PosturografoxApp {
                 self.avanzar_paso_ctsib();
             }
             self.ctsib_armado = false;
+        }
+        if let Some(m) = metricas {
+            // Cada ensayo cerrado queda en el historial del paciente, no solo
+            // en un CSV suelto que después hay que ir a buscar.
+            let sesion = historial::Sesion::nueva(&self.paciente, self.superficie, self.condicion, m);
+            match historial::agregar(&sesion) {
+                Ok(()) => self.historial.push(sesion),
+                Err(e) => self.estado = format!("No se pudo archivar la sesión: {e}"),
+            }
         }
         self.ultimo_registro = registro;
         self.reiniciar_sesion();
@@ -738,6 +775,10 @@ impl PosturografoxApp {
                 if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
                     self.exportar_sesion();
                 }
+                if ui.button("📈 Historial").clicked() {
+                    self.historial = historial::cargar();
+                    self.mostrar_historial = true;
+                }
             });
 
             tarjeta(ui, "CTSIB", LILA, |ui| {
@@ -940,6 +981,71 @@ impl PosturografoxApp {
         if cerrar || !abierta {
             self.asistente = None;
         }
+    }
+
+    /// Historial del paciente: lista de sesiones y evolución de las dos
+    /// métricas que mejor resumen el examen (área 95% y velocidad media).
+    fn ventana_historial(&mut self, ctx: &egui::Context) {
+        if !self.mostrar_historial {
+            return;
+        }
+        let paciente = self.paciente.clone();
+        let sesiones: Vec<historial::Sesion> =
+            historial::de_paciente(&self.historial, &paciente).into_iter().cloned().collect();
+        let mut abierta = true;
+
+        egui::Window::new("📈 Historial del paciente").open(&mut abierta).default_width(620.0).show(ctx, |ui| {
+            if paciente.trim().is_empty() {
+                ui.label("Escribí el identificador del paciente para ver su historial.");
+                let otros = historial::pacientes(&self.historial);
+                if !otros.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("Con sesiones guardadas:").small());
+                    for p in otros {
+                        if ui.selectable_label(false, &p).clicked() {
+                            self.paciente = p;
+                        }
+                    }
+                }
+                return;
+            }
+
+            if sesiones.is_empty() {
+                ui.label(format!("Todavía no hay sesiones archivadas de {paciente}."));
+                return;
+            }
+
+            ui.label(format!("{} sesiones archivadas", sesiones.len()));
+            ui.add_space(6.0);
+
+            // Evolución: de la más vieja a la más nueva, por número de sesión.
+            let mut area: Vec<[f64; 2]> = Vec::new();
+            let mut velocidad: Vec<[f64; 2]> = Vec::new();
+            for (i, s) in sesiones.iter().rev().enumerate() {
+                area.push([i as f64 + 1.0, s.metricas.area95_cm2]);
+                velocidad.push([i as f64 + 1.0, s.metricas.velocidad_media_cms]);
+            }
+            Plot::new("plot_historial").height(200.0).legend(Legend::default()).show(ui, |plot_ui| {
+                plot_ui.line(Line::new("Área 95% (cm²)", PlotPoints::from(area)).color(LILA).width(2.0));
+                plot_ui.line(Line::new("Vel. media (cm/s)", PlotPoints::from(velocidad)).color(AZUL).width(2.0));
+            });
+
+            ui.add_space(6.0);
+            egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                for s in &sesiones {
+                    ui.label(format!(
+                        "{} · {} · área {:.1} cm² · vel {:.2} cm/s · {:.0} s",
+                        fecha_legible(s.epoch_s),
+                        s.etiqueta(),
+                        s.metricas.area95_cm2,
+                        s.metricas.velocidad_media_cms,
+                        s.metricas.duracion_s
+                    ));
+                }
+            });
+        });
+
+        self.mostrar_historial = abierta;
     }
 
     /// Barra de progreso del ensayo: cuánto falta para que empiece a contar
@@ -1305,6 +1411,7 @@ impl eframe::App for PosturografoxApp {
 
         crate::config::ventana(ui.ctx(), &mut self.config, &mut self.mostrar_config, VERDE);
         self.ventana_calibracion(ui.ctx());
+        self.ventana_historial(ui.ctx());
 
         egui::CentralPanel::default().frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             let alto_total = ui.available_height();
@@ -1322,6 +1429,14 @@ impl eframe::App for PosturografoxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_fecha_legible_convierte_bien_epochs_conocidos() {
+        assert_eq!(fecha_legible(0), "1970-01-01 00:00");
+        assert_eq!(fecha_legible(1_000_000_000), "2001-09-09 01:46");
+        // 2024 fue bisiesto: el 29 de febrero tiene que existir.
+        assert_eq!(fecha_legible(1_709_208_000), "2024-02-29 12:00");
+    }
 
     #[test]
     fn el_modo_del_firmware_sale_de_su_mensaje_de_estado() {

@@ -9,7 +9,7 @@
 const CHI2_95_2GL: f64 = 5.991_46;
 
 /// Condición visual del examen.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Condicion {
     #[default]
     OjosAbiertos,
@@ -35,7 +35,7 @@ impl Condicion {
 /// Superficie de apoyo del examen (firme = piso normal, espuma = colchoneta
 /// que quita referencia propioceptiva precisa). Junto con `Condicion` arma
 /// las 4 condiciones del CTSIB.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Superficie {
     #[default]
     Firme,
@@ -59,7 +59,8 @@ impl Superficie {
 }
 
 /// Métricas clásicas de estabilometría sobre el trazo COP de una sesión.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct MetricasBalance {
     pub longitud_cm: f64,
     pub area95_cm2: f64,

@@ -11,7 +11,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 serialport = "4.10.1"
 rodio = "0.20.1"
 serde = { version = "1", features = ["derive"] }
+ron = "0.12.2"
 
 [dev-dependencies]
-ron = "0.12.2"
 tempfile = "3.27.0"

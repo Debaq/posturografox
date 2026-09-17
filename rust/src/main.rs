@@ -7,6 +7,7 @@ mod espectro;
 mod estabilometria;
 mod exportar;
 mod filtro;
+mod historial;
 mod juego;
 mod limites;
 mod serial_link;

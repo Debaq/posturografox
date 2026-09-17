@@ -86,7 +86,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   reproducible test-retest), análisis frecuencial (frecuencia mediana y
   F80), **peso corporal** y asimetrías izquierda/derecha y anterior/posterior
   en kg — información que hoy se descarta.
-- [ ] **R23 · Historial por paciente.** Almacén local de sesiones con listado,
+- [x] **R23 · Historial por paciente.** Almacén local de sesiones con listado,
   comparación y gráfico de evolución, en vez de un CSV suelto por ensayo.
 - [ ] **R24 · Informe imprimible.** Reporte con datos del paciente, trazo,
   elipse, tabla de métricas y cocientes CTSIB, listo para la ficha clínica.
