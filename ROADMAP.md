@@ -48,7 +48,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   todas las métricas en silencio.
 - [x] **R11 · Firmware: secuencia y marca de tiempo.** Agregar número de muestra
   y `micros()` a cada línea CSV.
-- [ ] **R12 · Host: base de tiempo del dispositivo.** Usar el reloj del firmware
+- [x] **R12 · Host: base de tiempo del dispositivo.** Usar el reloj del firmware
   en vez de `Instant::now()` del host (que agrupa muestras por el buffering
   del USB CDC y sesga la velocidad media), y reportar muestras perdidas.
 - [ ] **R13 · Firmware: calibración en NVS.** Guardar tara y calibración por

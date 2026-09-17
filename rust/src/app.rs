@@ -113,6 +113,11 @@ pub struct PosturografoxApp {
     buffer_crudo: VecDeque<[f64; 4]>,
     buffer_arriba: VecDeque<[f64; 4]>, // solo muestras ya sobre el umbral
 
+    /// Muestras que el firmware generó y nunca llegaron (línea corrupta o
+    /// buffer lleno). Se muestra en la barra de estado: si sube, la señal
+    /// no está completa y las métricas de velocidad quedan subestimadas.
+    muestras_perdidas: u64,
+
     // Detección automática de subida/bajada
     ocupado: bool,
     contador_arriba: u32,
@@ -171,6 +176,8 @@ impl Default for PosturografoxApp {
             offset: [0.0; 4],
             buffer_crudo: VecDeque::with_capacity(config.muestras_tara),
             buffer_arriba: VecDeque::with_capacity(config.muestras_tara),
+
+            muestras_perdidas: 0,
 
             ocupado: false,
             contador_arriba: 0,
@@ -327,6 +334,7 @@ impl PosturografoxApp {
     }
 
     fn procesar_muestra(&mut self, m: Muestra) {
+        self.muestras_perdidas += m.perdidas;
         self.buffer_crudo.push_back(m.crudos);
         if self.buffer_crudo.len() > self.config.muestras_tara {
             self.buffer_crudo.pop_front();
@@ -881,6 +889,17 @@ impl eframe::App for PosturografoxApp {
                 ui.label(&self.estado);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(format!("v{VERSION}")).small().color(Color32::from_gray(150)));
+                    if self.muestras_perdidas > 0 {
+                        ui.label(
+                            egui::RichText::new(format!("⚠ {} muestras perdidas", self.muestras_perdidas))
+                                .small()
+                                .color(CORAL),
+                        )
+                        .on_hover_text(
+                            "El firmware numera cada muestra: estas nunca llegaron. \
+                             Con muchas perdidas, la velocidad media queda subestimada.",
+                        );
+                    }
                 });
             });
         });
