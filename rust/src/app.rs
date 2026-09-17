@@ -47,6 +47,12 @@ struct Reconexion {
     proximo: Instant,
 }
 
+/// Ritmo de repintado según lo que esté pasando: 30 fps mientras llegan
+/// muestras, más lento cuando no hay nada que mostrar.
+const ESPERA_REPINTADO_ACTIVO: Duration = Duration::from_millis(33);
+const ESPERA_REPINTADO_CONECTADO: Duration = Duration::from_millis(200);
+const ESPERA_REPINTADO_OCIOSO: Duration = Duration::from_millis(500);
+
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
 
@@ -1399,6 +1405,7 @@ impl eframe::App for PosturografoxApp {
             Some(c) => c.eventos().try_iter().collect(),
             None => Vec::new(),
         };
+        let llegaron_datos = !eventos.is_empty();
         for evento in eventos {
             self.procesar_evento(evento);
         }
@@ -1501,7 +1508,16 @@ impl eframe::App for PosturografoxApp {
             });
         });
 
-        ui.ctx().request_repaint_after(Duration::from_millis(33));
+        // Repintar a 30 fps constantes gasta CPU (y batería) aunque no esté
+        // pasando nada. Solo se mantiene ese ritmo mientras entran muestras.
+        let espera = if llegaron_datos {
+            ESPERA_REPINTADO_ACTIVO
+        } else if self.conexion.is_some() {
+            ESPERA_REPINTADO_CONECTADO
+        } else {
+            ESPERA_REPINTADO_OCIOSO
+        };
+        ui.ctx().request_repaint_after(espera);
     }
 }
 

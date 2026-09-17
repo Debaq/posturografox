@@ -98,7 +98,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   el color equivocado.
 - [x] **R26 · Métricas incrementales.** Acumuladores O(1) por muestra en vez de
   recalcular toda la sesión en cada frame.
-- [ ] **R27 · Repintado por evento.** No repintar a 30 fps fijos cuando no llega
+- [x] **R27 · Repintado por evento.** No repintar a 30 fps fijos cuando no llega
   ninguna muestra.
 - [ ] **R28 · Audio decodificado una vez.** El loop de música vuelve a decodificar
   el `.ogg` completo en cada vuelta.
