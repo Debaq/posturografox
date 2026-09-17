@@ -53,6 +53,11 @@ const ESPERA_REPINTADO_ACTIVO: Duration = Duration::from_millis(33);
 const ESPERA_REPINTADO_CONECTADO: Duration = Duration::from_millis(200);
 const ESPERA_REPINTADO_OCIOSO: Duration = Duration::from_millis(500);
 
+/// Zona de cero del seguimiento automático, como fracción del umbral de
+/// presencia. Con el umbral en 10 kg son 0,2 kg: alcanza para la deriva del
+/// sensor y no llega a tapar una masa apoyada.
+const FRACCION_ZONA_CERO: f64 = 0.02;
+
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
 
@@ -419,14 +424,10 @@ pub struct PosturografoxApp {
     /// Peso medido sobre la plataforma, en kg (0 si todavía no hay
     /// calibración con masa conocida).
     peso_kg: f64,
-    /// Carga que marcan las celdas con la plataforma vacía. Se actualiza sola
-    /// mientras nadie está arriba: restarla evita que la deriva del cero del
-    /// HX711 (temperatura, tiempo desde la tara) se sume al peso.
-    linea_base: [f64; 4],
-    /// La línea de base ya se sembró con una lectura real. Sin esto, un
-    /// firmware que entrega cuentas crudas con offset grande haría creer que
-    /// hay alguien arriba apenas se conecta, y el cero nunca se ajustaría.
-    linea_base_lista: bool,
+    /// Cero de la balanza: lo que marcan las celdas con la plataforma vacía.
+    /// Se sigue solo, despacio, para que la deriva térmica del HX711 no se
+    /// sume al peso (ver `calibracion::CeroAutomatico`).
+    cero: calibracion::CeroAutomatico,
 
     // Registro de sesión: sin límite mientras dura (a diferencia de los
     // buffers de arriba, que son ventanas acotadas solo para dibujar).
@@ -511,8 +512,7 @@ impl Default for PosturografoxApp {
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
             peso_kg: 0.0,
-            linea_base: [0.0; 4],
-            linea_base_lista: false,
+            cero: calibracion::CeroAutomatico::default(),
 
             sesion_actual: Vec::new(),
             acumulador: Acumulador::nuevo(),
@@ -628,8 +628,7 @@ impl PosturografoxApp {
         if !usar_muestras_de_carga {
             // Tara pedida a mano: la plataforma está vacía, así que esta
             // lectura es también el cero de la balanza.
-            self.linea_base = self.offset;
-            self.linea_base_lista = true;
+            self.cero.sembrar(self.offset);
         }
         self.estado = "Tara por software aplicada".to_string();
     }
@@ -709,7 +708,7 @@ impl PosturografoxApp {
     /// unidad: kilogramos si hay calibración con masa conocida, y cuentas
     /// crudas del ADC mientras no la haya.
     fn carga_y_umbral(&self, crudos: [f64; 4]) -> (f64, f64) {
-        let neto: [f64; 4] = std::array::from_fn(|i| crudos[i] - self.linea_base[i]);
+        let neto = self.cero.neto(crudos);
         if self.config.calibrado_en_kg {
             (calibracion::peso_kg(&neto, &self.config.ganancia), self.config.umbral_kg)
         } else {
@@ -717,24 +716,14 @@ impl PosturografoxApp {
         }
     }
 
-    fn procesar_deteccion(&mut self, crudos: [f64; 4]) {
-        if !self.linea_base_lista {
-            // Primera muestra de la conexión: se asume la plataforma vacía,
-            // igual que hace la tara del firmware al encender.
-            self.linea_base = crudos;
-            self.linea_base_lista = true;
-        }
+    fn procesar_deteccion(&mut self, t_s: f64, crudos: [f64; 4]) {
         let (carga, umbral) = self.carga_y_umbral(crudos);
         self.peso_kg = if self.config.calibrado_en_kg { carga } else { 0.0 };
 
-        // Con la plataforma libre, la lectura actual *es* el cero: se sigue
-        // despacio para no arrastrar el ruido de una sola muestra.
-        if !self.ocupado && carga.abs() < umbral {
-            const SEGUIMIENTO: f64 = 0.01;
-            for (base, valor) in self.linea_base.iter_mut().zip(crudos.iter()) {
-                *base += (valor - *base) * SEGUIMIENTO;
-            }
-        }
+        // El cero solo se mueve con la plataforma libre y con una carga
+        // ínfima encima: cualquier cosa más pesada que eso es algo apoyado,
+        // no deriva del sensor.
+        self.cero.actualizar(t_s, crudos, carga, umbral * FRACCION_ZONA_CERO, self.ocupado);
         if carga.abs() >= umbral {
             self.buffer_arriba.push_back(crudos);
             if self.buffer_arriba.len() > self.config.muestras_tara {
@@ -779,7 +768,7 @@ impl PosturografoxApp {
         if self.buffer_crudo.len() > self.config.muestras_tara {
             self.buffer_crudo.pop_front();
         }
-        self.procesar_deteccion(m.crudos);
+        self.procesar_deteccion(m.t, m.crudos);
 
         let vals: [f64; 4] = std::array::from_fn(|i| (m.crudos[i] - self.offset[i]) * self.config.ganancia[i]);
         let suma: f64 = vals.iter().sum();
@@ -852,7 +841,7 @@ impl PosturografoxApp {
             EventoSerie::Conectado => {
                 self.estado = "Conectado".to_string();
                 self.muestras_perdidas = 0;
-                self.linea_base_lista = false; // se siembra con la primera muestra
+                self.cero.reiniciar(); // se siembra con la primera muestra
                 // Preguntar el estado del firmware: modo, calibración y tara.
                 if let Some(c) = &mut self.conexion {
                     c.enviar_comando(b'p');
