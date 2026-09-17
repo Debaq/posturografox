@@ -54,7 +54,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R13 · Firmware: calibración en NVS.** Guardar tara y calibración por
   celda en memoria no volátil, con comandos para setearlas desde la app, en
   vez de `#define` que obligan a recompilar.
-- [ ] **R14 · Firmware: estado consultable y salida no bloqueante.** Comando que
+- [x] **R14 · Firmware: estado consultable y salida no bloqueante.** Comando que
   informa modo (crudo/calibrado), frecuencia y calibración vigente, y
   chequeo de `availableForWrite()` para que el host lento no frene el
   muestreo.

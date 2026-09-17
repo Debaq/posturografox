@@ -88,6 +88,35 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(ch(ar, br), ch(ag, bg), ch(ab, bb), ch(aa, ba))
 }
 
+/// Escala en la que el firmware manda los datos.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModoFirmware {
+    /// Cuentas del ADC tal cual salen del HX711.
+    Crudo,
+    /// Ya con la tara y la calibración del firmware aplicadas.
+    Calibrado,
+}
+
+impl ModoFirmware {
+    /// Lee el modo del mensaje `# Modo: <crudo|calibrado>` que manda el
+    /// firmware al conectar y cada vez que se alterna con el comando 'c'.
+    pub fn desde_mensaje(mensaje: &str) -> Option<Self> {
+        let resto = mensaje.trim().strip_prefix("Modo:")?.trim();
+        match resto {
+            "crudo" => Some(ModoFirmware::Crudo),
+            "calibrado" => Some(ModoFirmware::Calibrado),
+            _ => None,
+        }
+    }
+
+    pub fn etiqueta(self) -> &'static str {
+        match self {
+            ModoFirmware::Crudo => "crudo",
+            ModoFirmware::Calibrado => "calibrado",
+        }
+    }
+}
+
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
     buf.push_back(valor);
     if buf.len() > max {
@@ -112,6 +141,11 @@ pub struct PosturografoxApp {
     offset: [f64; 4],
     buffer_crudo: VecDeque<[f64; 4]>,
     buffer_arriba: VecDeque<[f64; 4]>, // solo muestras ya sobre el umbral
+
+    /// En qué escala está mandando los datos el firmware: crudo (cuentas del
+    /// HX711) o calibrado. Lo informa el propio firmware al conectar, así un
+    /// cambio de modo no pasa desapercibido y deja los umbrales sin sentido.
+    modo_firmware: Option<ModoFirmware>,
 
     /// Muestras que el firmware generó y nunca llegaron (línea corrupta o
     /// buffer lleno). Se muestra en la barra de estado: si sube, la señal
@@ -177,6 +211,7 @@ impl Default for PosturografoxApp {
             buffer_crudo: VecDeque::with_capacity(config.muestras_tara),
             buffer_arriba: VecDeque::with_capacity(config.muestras_tara),
 
+            modo_firmware: None,
             muestras_perdidas: 0,
 
             ocupado: false,
@@ -369,12 +404,24 @@ impl PosturografoxApp {
 
     fn procesar_evento(&mut self, evento: EventoSerie) {
         match evento {
-            EventoSerie::Conectado => self.estado = "Conectado".to_string(),
+            EventoSerie::Conectado => {
+                self.estado = "Conectado".to_string();
+                self.muestras_perdidas = 0;
+                // Preguntar el estado del firmware: modo, calibración y tara.
+                if let Some(c) = &mut self.conexion {
+                    c.enviar_comando(b'p');
+                }
+            }
             EventoSerie::Desconectado => {
                 self.conexion = None;
                 self.estado = "Desconectado".to_string();
             }
-            EventoSerie::MensajeFirmware(m) => self.estado = m,
+            EventoSerie::MensajeFirmware(m) => {
+                if let Some(modo) = ModoFirmware::desde_mensaje(&m) {
+                    self.modo_firmware = Some(modo);
+                }
+                self.estado = m;
+            }
             EventoSerie::Error(e) => {
                 self.conexion = None;
                 self.estado = format!("Error: {e}");
@@ -431,6 +478,21 @@ impl PosturografoxApp {
                     && let Some(c) = &mut self.conexion
                 {
                     c.enviar_comando(b's');
+                }
+                let etiqueta = match self.modo_firmware {
+                    Some(modo) => modo.etiqueta(),
+                    None => "modo ?",
+                };
+                if ui
+                    .add_enabled(conectado, egui::Button::new(etiqueta))
+                    .on_hover_text(
+                        "En qué escala manda los datos el firmware. Cambiarla cambia \
+                         la escala del umbral de detección y de las ganancias.",
+                    )
+                    .clicked()
+                    && let Some(c) = &mut self.conexion
+                {
+                    c.enviar_comando(b'c');
                 }
             });
 
@@ -922,6 +984,14 @@ impl eframe::App for PosturografoxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_modo_del_firmware_sale_de_su_mensaje_de_estado() {
+        assert_eq!(ModoFirmware::desde_mensaje("Modo: crudo"), Some(ModoFirmware::Crudo));
+        assert_eq!(ModoFirmware::desde_mensaje("Modo: calibrado"), Some(ModoFirmware::Calibrado));
+        assert_eq!(ModoFirmware::desde_mensaje("Tara lista: 1,2,3,4"), None);
+        assert_eq!(ModoFirmware::desde_mensaje("Modo: otra cosa"), None);
+    }
 
     #[test]
     fn lerp_color_en_extremos_devuelve_los_colores_originales() {

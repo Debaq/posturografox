@@ -89,6 +89,9 @@
 #define PULSOS_EXTRA     1      // 1 = canal A ganancia 128 | 3 = canal A ganancia 64 | 2 = canal B ganancia 32
 #define IMPRIMIR_CRUDO   0      // 1 = cuentas crudas al inicio, 0 = valores calibrados
 #define DECIMALES        2
+// Cota del largo de una línea de datos: 2 contadores + 4 valores + comas.
+// Se usa para no escribir si no hay lugar en el buffer de salida.
+#define LARGO_MAX_LINEA  80
 
 // ====================================================================
 #define N_SENS 4
@@ -417,6 +420,15 @@ void loop() {
   }
   muestrasConteo++;
   numeroMuestra++;
+
+  // Si el host dejó de leer, el buffer del USB CDC se llena y Serial.printf
+  // bloquea hasta que se vacíe: el loop se frena, los HX711 siguen
+  // convirtiendo y aparecen timeouts y desincronización. Preferimos saltear
+  // la línea; el host ve el salto en el número de muestra y la cuenta como
+  // perdida, que es exactamente lo que pasó.
+  if (Serial.availableForWrite() < LARGO_MAX_LINEA) {
+    return;
+  }
 
   if (modoCrudo) {
     Serial.printf("%lu,%lu,%ld,%ld,%ld,%ld\n",
