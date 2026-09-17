@@ -12,7 +12,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R1 · Limpiar el repo.** Borrar la app Python (`app/`, `requirements.txt`),
   que quedó duplicada y muerta tras el port a Rust, y reescribir el README
   para documentar la app Rust (build, ejecución, firmware).
-- [ ] **R2 · CI unificado.** `cargo test` + `clippy` + `fmt --check` en cada push
+- [x] **R2 · CI unificado.** `cargo test` + `clippy` + `fmt --check` en cada push
   y PR; release de binarios Rust (Linux/Windows) en tags `v*.*.*`. Hoy el
   workflow de release sigue siendo el de Python y el de Rust solo corre en
   una rama.
