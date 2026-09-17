@@ -8,6 +8,7 @@ mod estabilometria;
 mod exportar;
 mod filtro;
 mod historial;
+mod informe;
 mod juego;
 mod limites;
 mod serial_link;

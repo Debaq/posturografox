@@ -24,6 +24,7 @@ use crate::estabilometria::{
 use crate::exportar::exportar_csv;
 use crate::filtro::filtrar_registro;
 use crate::historial;
+use crate::informe;
 use crate::juego;
 use crate::limites;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
@@ -163,6 +164,23 @@ fn fecha_legible(epoch_s: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let anio = if m <= 2 { y + 1 } else { y };
     format!("{anio:04}-{m:02}-{d:02} {:02}:{:02}", segundos_del_dia / 3600, (segundos_del_dia % 3600) / 60)
+}
+
+/// Abre un archivo con la aplicación que el sistema tenga asociada. Si no se
+/// puede (sin entorno gráfico, sin handler), no pasa nada: el archivo quedó
+/// escrito igual y la barra de estado muestra su ruta.
+fn abrir_en_el_sistema(ruta: &std::path::Path) {
+    let comando = if cfg!(target_os = "windows") {
+        ("cmd", vec!["/C", "start", ""])
+    } else if cfg!(target_os = "macos") {
+        ("open", vec![])
+    } else {
+        ("xdg-open", vec![])
+    };
+    let mut proceso = std::process::Command::new(comando.0);
+    proceso.args(comando.1);
+    proceso.arg(ruta);
+    let _ = proceso.spawn();
 }
 
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
@@ -775,6 +793,9 @@ impl PosturografoxApp {
                 if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
                     self.exportar_sesion();
                 }
+                if ui.add_enabled(hay_datos, egui::Button::new("🖨 Informe")).clicked() {
+                    self.generar_informe();
+                }
                 if ui.button("📈 Historial").clicked() {
                     self.historial = historial::cargar();
                     self.mostrar_historial = true;
@@ -1077,6 +1098,38 @@ impl PosturografoxApp {
         if self.ocupado && !self.ensayo_cerrado { calcular_metricas(&self.sesion_actual) } else { self.ultima_sesion }
     }
 
+    /// Genera el informe imprimible de la última sesión y lo abre con el
+    /// navegador del sistema, que es donde se imprime o se guarda como PDF.
+    fn generar_informe(&mut self) {
+        let Some(metricas) = self.ultima_sesion else {
+            self.estado = "No hay una sesión completa para informar".to_string();
+            return;
+        };
+        let cocientes = self.cocientes_ctsib();
+        let fecha = fecha_legible(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default(),
+        );
+        let datos = informe::DatosInforme {
+            paciente: &self.paciente,
+            fecha: &fecha,
+            superficie: self.ultima_superficie,
+            condicion: self.ultima_condicion,
+            ancho_cm: self.config.ancho_cm,
+            prof_cm: self.config.prof_cm,
+            metricas: &metricas,
+            registro: &self.ultimo_registro,
+            cocientes: &cocientes,
+            version: VERSION,
+        };
+        match informe::escribir(&datos) {
+            Ok(ruta) => {
+                abrir_en_el_sistema(&ruta);
+                self.estado = format!("Informe generado: {}", ruta.display());
+            }
+            Err(e) => self.estado = format!("Error al generar el informe: {e}"),
+        }
+    }
+
     fn panel_metricas(&self, ui: &mut egui::Ui) {
         let (etiqueta, acento, texto) = if self.ocupado {
             match calcular_metricas(&self.sesion_actual) {
@@ -1121,30 +1174,34 @@ impl PosturografoxApp {
 
     /// Cocientes del CTSIB disponibles con las sesiones ya registradas: solo
     /// se muestra cada uno cuando ambas condiciones que compara ya se corrieron.
-    fn resumen_ctsib(&self) -> Option<String> {
+    fn cocientes_ctsib(&self) -> Vec<(String, f64)> {
         let buscar = |s, c| self.resultados_ctsib.get(&(s, c));
         let firme_oa = buscar(Superficie::Firme, Condicion::OjosAbiertos);
         let firme_oc = buscar(Superficie::Firme, Condicion::OjosCerrados);
         let espuma_oa = buscar(Superficie::Espuma, Condicion::OjosAbiertos);
         let espuma_oc = buscar(Superficie::Espuma, Condicion::OjosCerrados);
 
-        let mut partes = Vec::new();
-        if let (Some(a), Some(b)) = (firme_oa, firme_oc)
-            && let Some(c) = cociente_area(a, b)
-        {
-            partes.push(format!("Romberg firme {c:.2}x"));
+        let mut cocientes = Vec::new();
+        for (nombre, base, comparado) in [
+            ("Romberg firme", firme_oa, firme_oc),
+            ("Romberg espuma", espuma_oa, espuma_oc),
+            ("Ratio vestibular", firme_oa, espuma_oc),
+        ] {
+            if let (Some(a), Some(b)) = (base, comparado)
+                && let Some(c) = cociente_area(a, b)
+            {
+                cocientes.push((nombre.to_string(), c));
+            }
         }
-        if let (Some(a), Some(b)) = (espuma_oa, espuma_oc)
-            && let Some(c) = cociente_area(a, b)
-        {
-            partes.push(format!("Romberg espuma {c:.2}x"));
+        cocientes
+    }
+
+    fn resumen_ctsib(&self) -> Option<String> {
+        let cocientes = self.cocientes_ctsib();
+        if cocientes.is_empty() {
+            return None;
         }
-        if let (Some(a), Some(b)) = (firme_oa, espuma_oc)
-            && let Some(c) = cociente_area(a, b)
-        {
-            partes.push(format!("Ratio vestibular {c:.2}x"));
-        }
-        if partes.is_empty() { None } else { Some(partes.join(" · ")) }
+        Some(cocientes.iter().map(|(n, v)| format!("{n} {v:.2}x")).collect::<Vec<_>>().join(" · "))
     }
 
     /// El registro que se está midiendo (o el último cerrado si nadie está
