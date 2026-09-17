@@ -212,6 +212,17 @@ fn segmentar_trazo(xs: &[f64], ys: &[f64], tramos: usize) -> Vec<Vec<[f64; 2]>> 
     salida
 }
 
+/// Grupos de controles de la barra superior.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pestana {
+    /// Paciente, CTSIB y reparto de peso: lo que se usa mientras se evalúa.
+    Examen,
+    /// Conexión, firmware, calibración y trazo.
+    Dispositivo,
+    /// Límites de estabilidad y modo juego.
+    Ejercicios,
+}
+
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
     buf.push_back(valor);
     if buf.len() > max {
@@ -305,6 +316,9 @@ pub struct PosturografoxApp {
     // Ejercicio de límites de estabilidad (ver src/limites.rs)
     ejercicio: limites::EjercicioLimites,
 
+    /// Qué grupo de tarjetas se está mostrando.
+    pestana: Pestana,
+
     // Modo juego (ver src/juego.rs)
     modo_juego: bool,
     estado_juego: juego::EstadoJuego,
@@ -368,6 +382,7 @@ impl Default for PosturografoxApp {
 
             ejercicio: limites::EjercicioLimites::default(),
 
+            pestana: Pestana::Examen,
             modo_juego: false,
             estado_juego: juego::EstadoJuego::default(),
         }
@@ -688,258 +703,274 @@ impl PosturografoxApp {
 
     fn barra_controles(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+        self.barra_pestanas(ui);
+        ui.add_space(8.0);
 
-        ui.horizontal(|ui| {
-            let conectado = self.conexion.is_some();
-
-            tarjeta(ui, "CONEXIÓN", AZUL, |ui| {
-                if conectado {
-                    let simulado = self.conexion.as_ref().is_some_and(|c| c.es_simulado());
-                    let descripcion = self.conexion.as_ref().map(|c| c.descripcion()).unwrap_or_default();
-                    if simulado {
-                        // Que nadie confunda una demo con una medición real.
-                        ui.colored_label(AMARILLO, "⚠ Simulado")
-                            .on_hover_text("Datos sintéticos generados por la app: no sirven como registro clínico");
-                    } else {
-                        ui.colored_label(VERDE, "🟢 Online").on_hover_text(descripcion);
-                    }
-                    if ui.button("Desconectar").clicked() {
-                        self.alternar_conexion();
-                    }
-                } else {
-                    egui::ComboBox::from_id_salt("combo_puerto")
-                        .width(150.0)
-                        .selected_text(self.puerto_seleccionado.clone().unwrap_or_else(|| "Sin puerto".to_string()))
-                        .show_ui(ui, |ui| {
-                            for p in self.puertos.clone() {
-                                ui.selectable_value(&mut self.puerto_seleccionado, Some(p.clone()), p);
-                            }
-                        });
-                    if ui.button("⟳").on_hover_text("Actualizar lista de puertos").clicked() {
-                        self.puertos = puertos_usables();
-                    }
-                    if ui.button("Conectar").clicked() {
-                        self.alternar_conexion();
-                    }
-                    if ui
-                        .button("🔍 Buscar")
-                        .on_hover_text("Probar los puertos USB hasta encontrar el posturógrafo")
-                        .clicked()
-                    {
-                        self.estado = "Buscando posturógrafo...".to_string();
-                        self.descubrimiento = Some(descubrimiento::iniciar());
-                    }
-                    if ui
-                        .button("Simulador")
-                        .on_hover_text("Datos sintéticos, sin plataforma: para probar la app o el modo juego")
-                        .clicked()
-                    {
-                        self.conectar_simulador();
-                    }
-                }
-            });
-
-            tarjeta(ui, "FIRMWARE", NARANJA, |ui| {
-                if ui.add_enabled(conectado, egui::Button::new("Tara")).clicked()
-                    && let Some(c) = &mut self.conexion
-                {
-                    c.enviar_comando(b't');
-                }
-                if ui.add_enabled(conectado, egui::Button::new("Resincronizar")).clicked()
-                    && let Some(c) = &mut self.conexion
-                {
-                    c.enviar_comando(b's');
-                }
-                let etiqueta = match self.modo_firmware {
-                    Some(modo) => modo.etiqueta(),
-                    None => "modo ?",
-                };
-                if ui
-                    .add_enabled(conectado, egui::Button::new(etiqueta))
-                    .on_hover_text(
-                        "En qué escala manda los datos el firmware. Cambiarla cambia \
-                         la escala del umbral de detección y de las ganancias.",
-                    )
-                    .clicked()
-                    && let Some(c) = &mut self.conexion
-                {
-                    c.enviar_comando(b'c');
-                }
-            });
-
-            tarjeta(ui, "CALIBRACIÓN", VERDE, |ui| {
-                if ui
-                    .button("Tara")
-                    .on_hover_text(format!(
-                        "Promedia las últimas {} muestras crudas y las fija como cero",
-                        self.config.muestras_tara
-                    ))
-                    .clicked()
-                {
-                    self.tara_software(false);
-                }
-                if ui
-                    .button("⚖ Calibrar")
-                    .on_hover_text("Asistente con masa conocida: deja las lecturas en kilogramos")
-                    .clicked()
-                {
-                    self.asistente = Some(Asistente::default());
-                }
-                if self.config.calibrado_en_kg {
-                    ui.label(egui::RichText::new("en kg").small().color(VERDE));
-                }
-            });
-
-            tarjeta(ui, "TRAZO", CORAL, |ui| {
-                if ui.button("Limpiar").clicked() {
-                    self.limpiar_trazo();
-                }
-            });
-
-            // Un solo acceso a todas las opciones del programa: geometría,
-            // ganancias, umbrales, gráficos y modo juego (ver src/config.rs).
-            tarjeta(ui, "AJUSTES", VERDE, |ui| {
-                if ui
-                    .button("⚙ Configuración")
-                    .on_hover_text("Plataforma, calibración, detección, gráficos y modo juego")
-                    .clicked()
-                {
-                    self.mostrar_config = !self.mostrar_config;
-                }
-                ui.label(
-                    egui::RichText::new(format!("{:.0}×{:.0} cm", self.config.ancho_cm, self.config.prof_cm))
-                        .small()
-                        .color(Color32::from_gray(140)),
-                );
-            });
-
-            tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
-                if ui.button("🎮 Modo juego").clicked() {
-                    self.modo_juego = true;
-                }
+        // Scroll horizontal: en una ventana angosta las tarjetas ya no se
+        // desbordan fuera de la pantalla, se pueden recorrer.
+        egui::ScrollArea::horizontal().id_salt("tarjetas").show(ui, |ui| {
+            ui.horizontal(|ui| match self.pestana {
+                Pestana::Examen => self.tarjetas_examen(ui),
+                Pestana::Dispositivo => self.tarjetas_dispositivo(ui),
+                Pestana::Ejercicios => self.tarjetas_ejercicios(ui),
             });
         });
+    }
 
-        ui.add_space(10.0);
-
+    /// Pestañas: en vez de nueve tarjetas apiladas a la vez, se muestra el
+    /// grupo que corresponde a lo que se está haciendo.
+    fn barra_pestanas(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            tarjeta(ui, "PACIENTE", LILA, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.paciente).hint_text("Paciente / ID").desired_width(140.0));
-                let hay_datos = !self.ultimo_registro.is_empty();
-                if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
-                    self.exportar_sesion();
+            for (pestana, etiqueta) in [
+                (Pestana::Examen, "Examen"),
+                (Pestana::Dispositivo, "Dispositivo"),
+                (Pestana::Ejercicios, "Ejercicios"),
+            ] {
+                if ui.selectable_label(self.pestana == pestana, etiqueta).clicked() {
+                    self.pestana = pestana;
                 }
-                if ui.add_enabled(hay_datos, egui::Button::new("🖨 Informe")).clicked() {
-                    self.generar_informe();
-                }
-                if ui.button("📈 Historial").clicked() {
-                    self.historial = historial::cargar();
-                    self.mostrar_historial = true;
-                }
-            });
+            }
+            ui.separator();
+            if ui
+                .button("⚙ Configuración")
+                .on_hover_text("Plataforma, calibración, detección, gráficos, ensayo y modo juego")
+                .clicked()
+            {
+                self.mostrar_config = !self.mostrar_config;
+            }
+            if ui.button("📈 Historial").clicked() {
+                self.historial = historial::cargar();
+                self.mostrar_historial = !self.mostrar_historial;
+            }
+        });
+    }
 
-            tarjeta(ui, "CTSIB", LILA, |ui| {
-                ui.label("ℹ").on_hover_text(
-                    "Examen guiado de 4 condiciones. Elegí un paso y apretá 'Iniciar \
+    fn tarjetas_examen(&mut self, ui: &mut egui::Ui) {
+        tarjeta(ui, "PACIENTE", LILA, |ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.paciente).hint_text("Paciente / ID").desired_width(140.0));
+            let hay_datos = !self.ultimo_registro.is_empty();
+            if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
+                self.exportar_sesion();
+            }
+            if ui.add_enabled(hay_datos, egui::Button::new("🖨 Informe")).clicked() {
+                self.generar_informe();
+            }
+            if ui.button("📈 Historial").clicked() {
+                self.historial = historial::cargar();
+                self.mostrar_historial = true;
+            }
+        });
+        tarjeta(ui, "CTSIB", LILA, |ui| {
+            ui.label("ℹ").on_hover_text(
+                "Examen guiado de 4 condiciones. Elegí un paso y apretá 'Iniciar \
                      prueba': recién ahí cuenta pararse en la plataforma como resultado \
                      del CTSIB (sin armarlo, pararse solo muestra el COP en vivo, no \
                      graba nada acá). Al bajarte se guarda ese paso y salta sola al \
                      siguiente pendiente. El ✓ marca los pasos ya hechos.",
-                );
-                ui.vertical(|ui| {
-                    for (i, &(sup, cond)) in PASOS_CTSIB.iter().enumerate() {
-                        let hecho = self.resultados_ctsib.contains_key(&(sup, cond));
-                        let activo = self.superficie == sup && self.condicion == cond;
-                        let marca = if hecho { "✓" } else { "○" };
-                        let etiqueta = format!("{marca} {}. {} + {}", i + 1, sup.etiqueta(), cond.etiqueta());
-                        let respuesta = ui.selectable_label(activo, etiqueta);
-                        if !self.ctsib_armado && respuesta.clicked() {
-                            self.superficie = sup;
-                            self.condicion = cond;
-                        }
+            );
+            ui.vertical(|ui| {
+                for (i, &(sup, cond)) in PASOS_CTSIB.iter().enumerate() {
+                    let hecho = self.resultados_ctsib.contains_key(&(sup, cond));
+                    let activo = self.superficie == sup && self.condicion == cond;
+                    let marca = if hecho { "✓" } else { "○" };
+                    let etiqueta = format!("{marca} {}. {} + {}", i + 1, sup.etiqueta(), cond.etiqueta());
+                    let respuesta = ui.selectable_label(activo, etiqueta);
+                    if !self.ctsib_armado && respuesta.clicked() {
+                        self.superficie = sup;
+                        self.condicion = cond;
                     }
+                }
 
-                    ui.add_space(4.0);
-                    if self.ctsib_armado {
-                        let estado = if self.ocupado { "grabando..." } else { "subite a la plataforma" };
-                        ui.label(format!(
-                            "Prueba armada: {} + {} — {estado}",
-                            self.superficie.etiqueta(),
-                            self.condicion.etiqueta()
-                        ));
-                        if ui.button("Cancelar").clicked() {
-                            self.ctsib_armado = false;
-                        }
-                    } else if ui.button("Iniciar prueba").clicked() {
-                        self.ctsib_armado = true;
+                ui.add_space(4.0);
+                if self.ctsib_armado {
+                    let estado = if self.ocupado { "grabando..." } else { "subite a la plataforma" };
+                    ui.label(format!(
+                        "Prueba armada: {} + {} — {estado}",
+                        self.superficie.etiqueta(),
+                        self.condicion.etiqueta()
+                    ));
+                    if ui.button("Cancelar").clicked() {
+                        self.ctsib_armado = false;
                     }
-                });
-            });
-
-            tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
-                let barra = |ui: &mut egui::Ui, etq: &str, idx: usize| {
-                    ui.label(etq);
-                    let pct = self.ultimos_pct[idx].clamp(0.0, 100.0);
-                    ui.add(egui::ProgressBar::new((pct / 100.0) as f32).desired_width(56.0).text(format!("{pct:.0}%")));
-                };
-                // Grilla 2x2 como la plataforma real: frontal arriba, posterior abajo.
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        barra(ui, "FI", 1);
-                        barra(ui, "FD", 0);
-                    });
-                    ui.horizontal(|ui| {
-                        barra(ui, "BI", 3);
-                        barra(ui, "BD", 2);
-                    });
-
-                    // La plataforma es una balanza: el peso y el reparto entre
-                    // lados son datos clínicos que antes se descartaban.
-                    let derecha = self.ultimos_pct[0] + self.ultimos_pct[2];
-                    let frente = self.ultimos_pct[0] + self.ultimos_pct[1];
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "I/D {:.0}/{:.0}%  ·  Post/Ant {:.0}/{:.0}%",
-                            100.0 - derecha,
-                            derecha,
-                            100.0 - frente,
-                            frente
-                        ))
-                        .small(),
-                    );
-                    if self.config.calibrado_en_kg && self.peso_kg.abs() > 0.5 {
-                        ui.label(
-                            egui::RichText::new(format!("Peso: {:.1} kg", self.peso_kg))
-                                .strong()
-                                .color(NARANJA.gamma_multiply(0.8)),
-                        );
-                    }
-                });
-            });
-
-            tarjeta(ui, "LÍMITES DE ESTABILIDAD", AMARILLO, |ui| {
-                if self.ejercicio.activo() {
-                    if self.ejercicio.completo() {
-                        if let Some(resumen) = self.ejercicio.resumen() {
-                            ui.label(resumen);
-                        }
-                        if ui.button("Reiniciar").clicked() {
-                            self.ejercicio.iniciar();
-                        }
-                    } else {
-                        ui.label(format!("Objetivo {}/{}", self.ejercicio.indice_actual() + 1, limites::DIRECCIONES));
-                        if ui.button("Detener").clicked() {
-                            self.ejercicio.detener();
-                        }
-                    }
-                } else if ui
-                    .add_enabled(self.ocupado, egui::Button::new("Iniciar ejercicio"))
-                    .on_hover_text("Parate en la plataforma primero")
-                    .clicked()
-                {
-                    self.ejercicio.iniciar();
+                } else if ui.button("Iniciar prueba").clicked() {
+                    self.ctsib_armado = true;
                 }
             });
+        });
+        tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
+            let barra = |ui: &mut egui::Ui, etq: &str, idx: usize| {
+                ui.label(etq);
+                let pct = self.ultimos_pct[idx].clamp(0.0, 100.0);
+                ui.add(egui::ProgressBar::new((pct / 100.0) as f32).desired_width(56.0).text(format!("{pct:.0}%")));
+            };
+            // Grilla 2x2 como la plataforma real: frontal arriba, posterior abajo.
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    barra(ui, "FI", 1);
+                    barra(ui, "FD", 0);
+                });
+                ui.horizontal(|ui| {
+                    barra(ui, "BI", 3);
+                    barra(ui, "BD", 2);
+                });
+
+                // La plataforma es una balanza: el peso y el reparto entre
+                // lados son datos clínicos que antes se descartaban.
+                let derecha = self.ultimos_pct[0] + self.ultimos_pct[2];
+                let frente = self.ultimos_pct[0] + self.ultimos_pct[1];
+                ui.label(
+                    egui::RichText::new(format!(
+                        "I/D {:.0}/{:.0}%  ·  Post/Ant {:.0}/{:.0}%",
+                        100.0 - derecha,
+                        derecha,
+                        100.0 - frente,
+                        frente
+                    ))
+                    .small(),
+                );
+                if self.config.calibrado_en_kg && self.peso_kg.abs() > 0.5 {
+                    ui.label(
+                        egui::RichText::new(format!("Peso: {:.1} kg", self.peso_kg))
+                            .strong()
+                            .color(NARANJA.gamma_multiply(0.8)),
+                    );
+                }
+            });
+        });
+    }
+
+    fn tarjetas_dispositivo(&mut self, ui: &mut egui::Ui) {
+        let conectado = self.conexion.is_some();
+        tarjeta(ui, "CONEXIÓN", AZUL, |ui| {
+            if conectado {
+                let simulado = self.conexion.as_ref().is_some_and(|c| c.es_simulado());
+                let descripcion = self.conexion.as_ref().map(|c| c.descripcion()).unwrap_or_default();
+                if simulado {
+                    // Que nadie confunda una demo con una medición real.
+                    ui.colored_label(AMARILLO, "⚠ Simulado")
+                        .on_hover_text("Datos sintéticos generados por la app: no sirven como registro clínico");
+                } else {
+                    ui.colored_label(VERDE, "🟢 Online").on_hover_text(descripcion);
+                }
+                if ui.button("Desconectar").clicked() {
+                    self.alternar_conexion();
+                }
+            } else {
+                egui::ComboBox::from_id_salt("combo_puerto")
+                    .width(150.0)
+                    .selected_text(self.puerto_seleccionado.clone().unwrap_or_else(|| "Sin puerto".to_string()))
+                    .show_ui(ui, |ui| {
+                        for p in self.puertos.clone() {
+                            ui.selectable_value(&mut self.puerto_seleccionado, Some(p.clone()), p);
+                        }
+                    });
+                if ui.button("⟳").on_hover_text("Actualizar lista de puertos").clicked() {
+                    self.puertos = puertos_usables();
+                }
+                if ui.button("Conectar").clicked() {
+                    self.alternar_conexion();
+                }
+                if ui
+                    .button("🔍 Buscar")
+                    .on_hover_text("Probar los puertos USB hasta encontrar el posturógrafo")
+                    .clicked()
+                {
+                    self.estado = "Buscando posturógrafo...".to_string();
+                    self.descubrimiento = Some(descubrimiento::iniciar());
+                }
+                if ui
+                    .button("Simulador")
+                    .on_hover_text("Datos sintéticos, sin plataforma: para probar la app o el modo juego")
+                    .clicked()
+                {
+                    self.conectar_simulador();
+                }
+            }
+        });
+        tarjeta(ui, "FIRMWARE", NARANJA, |ui| {
+            if ui.add_enabled(conectado, egui::Button::new("Tara")).clicked()
+                && let Some(c) = &mut self.conexion
+            {
+                c.enviar_comando(b't');
+            }
+            if ui.add_enabled(conectado, egui::Button::new("Resincronizar")).clicked()
+                && let Some(c) = &mut self.conexion
+            {
+                c.enviar_comando(b's');
+            }
+            let etiqueta = match self.modo_firmware {
+                Some(modo) => modo.etiqueta(),
+                None => "modo ?",
+            };
+            if ui
+                .add_enabled(conectado, egui::Button::new(etiqueta))
+                .on_hover_text(
+                    "En qué escala manda los datos el firmware. Cambiarla cambia \
+                         la escala del umbral de detección y de las ganancias.",
+                )
+                .clicked()
+                && let Some(c) = &mut self.conexion
+            {
+                c.enviar_comando(b'c');
+            }
+        });
+        tarjeta(ui, "CALIBRACIÓN", VERDE, |ui| {
+            if ui
+                .button("Tara")
+                .on_hover_text(format!(
+                    "Promedia las últimas {} muestras crudas y las fija como cero",
+                    self.config.muestras_tara
+                ))
+                .clicked()
+            {
+                self.tara_software(false);
+            }
+            if ui
+                .button("⚖ Calibrar")
+                .on_hover_text("Asistente con masa conocida: deja las lecturas en kilogramos")
+                .clicked()
+            {
+                self.asistente = Some(Asistente::default());
+            }
+            if self.config.calibrado_en_kg {
+                ui.label(egui::RichText::new("en kg").small().color(VERDE));
+            }
+        });
+        tarjeta(ui, "TRAZO", CORAL, |ui| {
+            if ui.button("Limpiar").clicked() {
+                self.limpiar_trazo();
+            }
+        });
+    }
+
+    fn tarjetas_ejercicios(&mut self, ui: &mut egui::Ui) {
+        tarjeta(ui, "LÍMITES DE ESTABILIDAD", AMARILLO, |ui| {
+            if self.ejercicio.activo() {
+                if self.ejercicio.completo() {
+                    if let Some(resumen) = self.ejercicio.resumen() {
+                        ui.label(resumen);
+                    }
+                    if ui.button("Reiniciar").clicked() {
+                        self.ejercicio.iniciar();
+                    }
+                } else {
+                    ui.label(format!("Objetivo {}/{}", self.ejercicio.indice_actual() + 1, limites::DIRECCIONES));
+                    if ui.button("Detener").clicked() {
+                        self.ejercicio.detener();
+                    }
+                }
+            } else if ui
+                .add_enabled(self.ocupado, egui::Button::new("Iniciar ejercicio"))
+                .on_hover_text("Parate en la plataforma primero")
+                .clicked()
+            {
+                self.ejercicio.iniciar();
+            }
+        });
+        tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
+            if ui.button("🎮 Modo juego").clicked() {
+                self.modo_juego = true;
+            }
         });
     }
 

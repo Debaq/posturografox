@@ -114,11 +114,12 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 6 — UX clínica
 
-- [ ] **R32 · Navegación por secciones.** Las siete tarjetas en una fila se
+- [x] **R32 · Navegación por secciones.** Las siete tarjetas en una fila se
   desbordan en ventanas chicas: pestañas Examen / Configuración / Ejercicios
   / Historial, con los gráficos grandes.
-- [ ] **R33 · Controles en su lugar.** "Espaciado" (cosmético del trazo) está en
+- [x] **R33 · Controles en su lugar.** "Espaciado" (cosmético del trazo) está en
   la tarjeta de detección automática; queda reubicado en Configuración.
+  *(Resuelto junto con R6: ahora vive en la sección Gráficos.)*
 - [ ] **R34 · Modo paciente.** Pantalla completa con solo el COP, sin controles,
   para que el paciente vea su biofeedback sin distracciones.
 - [ ] **R35 · Tema oscuro y alto contraste.** Hoy la app fuerza tema claro.
