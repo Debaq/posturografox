@@ -148,11 +148,11 @@ impl Audio {
     /// Como los `Decoder` no son `Clone` no se puede usar `repeat_infinite`;
     /// en cambio, cada frame se chequea si terminó y se vuelve a poner.
     fn mantener_loop(&mut self) {
-        if self.musica.as_ref().is_some_and(|s| s.empty()) {
-            if let Some(pista) = self.pista_actual {
-                self.pista_actual = None; // fuerza a poner_pista a recargarla
-                self.poner_pista(pista);
-            }
+        if self.musica.as_ref().is_some_and(|s| s.empty())
+            && let Some(pista) = self.pista_actual
+        {
+            self.pista_actual = None; // fuerza a poner_pista a recargarla
+            self.poner_pista(pista);
         }
     }
 
@@ -619,10 +619,10 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         estado.puntaje_maximo = partida.puntaje;
         guardar_mejor_puntaje(estado.puntaje_maximo);
     }
-    if salir_tecla || salir_boton {
-        if let Some(audio) = audio.as_deref_mut() {
-            audio.detener_musica(); // se sale al modo clínico, no dejar sonando
-        }
+    if (salir_tecla || salir_boton)
+        && let Some(audio) = audio
+    {
+        audio.detener_musica(); // se sale al modo clínico, no dejar sonando
     }
 
     salir_tecla || salir_boton
@@ -721,6 +721,9 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
 /// Dibuja la partida en curso y hace la detección de colisión (que depende
 /// del layout real, por eso vive junto al dibujo y no en `actualizar`).
 /// Devuelve `true` si se apretó "Salir".
+// La lista larga de sprites se agrupa en un struct en R31 del roadmap, junto
+// con la separación entre simulación y dibujo.
+#[allow(clippy::too_many_arguments)]
 fn dibujar_partida(
     ui: &mut Ui,
     zorro: &SpriteSheet,

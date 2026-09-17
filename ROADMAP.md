@@ -21,7 +21,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R4 · Licencia, privacidad y herramientas.** `LICENSE`, nota de manejo de
   datos de pacientes, `rustfmt.toml` y `rust-toolchain.toml` para builds
   reproducibles.
-- [ ] **R5 · Avisos de clippy.** Los 12 avisos actuales (ifs colapsables, deref
+- [x] **R5 · Avisos de clippy.** Los 12 avisos actuales (ifs colapsables, deref
   redundante, función con 13 argumentos).
 
 ## Fase 1 — Configuración y persistencia

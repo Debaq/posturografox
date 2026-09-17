@@ -250,9 +250,7 @@ impl PosturografoxApp {
                 suma[i] += c[i];
             }
         }
-        for i in 0..4 {
-            self.offset[i] = suma[i] / n;
-        }
+        self.offset = suma.map(|s| s / n);
         self.estado = "Tara por software aplicada".to_string();
     }
 
@@ -352,9 +350,7 @@ impl PosturografoxApp {
         let (cop_ml, cop_ap) = if self.ocupado && suma != 0.0 {
             let ml = ((vals[0] + vals[2]) - (vals[1] + vals[3])) / suma * (self.ancho_cm / 2.0);
             let ap = ((vals[0] + vals[1]) - (vals[2] + vals[3])) / suma * (self.prof_cm / 2.0);
-            for i in 0..4 {
-                self.ultimos_pct[i] = vals[i] / suma * 100.0;
-            }
+            self.ultimos_pct = vals.map(|v| v / suma * 100.0);
             (ml, ap)
         } else {
             (0.0, 0.0)
@@ -427,15 +423,15 @@ impl PosturografoxApp {
             });
 
             tarjeta(ui, "FIRMWARE", NARANJA, |ui| {
-                if ui.add_enabled(conectado, egui::Button::new("Tara")).clicked() {
-                    if let Some(c) = &mut self.conexion {
-                        c.enviar_comando(b't');
-                    }
+                if ui.add_enabled(conectado, egui::Button::new("Tara")).clicked()
+                    && let Some(c) = &mut self.conexion
+                {
+                    c.enviar_comando(b't');
                 }
-                if ui.add_enabled(conectado, egui::Button::new("Resincronizar")).clicked() {
-                    if let Some(c) = &mut self.conexion {
-                        c.enviar_comando(b's');
-                    }
+                if ui.add_enabled(conectado, egui::Button::new("Resincronizar")).clicked()
+                    && let Some(c) = &mut self.conexion
+                {
+                    c.enviar_comando(b's');
                 }
             });
 
@@ -648,20 +644,20 @@ impl PosturografoxApp {
         let espuma_oc = buscar(Superficie::Espuma, Condicion::OjosCerrados);
 
         let mut partes = Vec::new();
-        if let (Some(a), Some(b)) = (firme_oa, firme_oc) {
-            if let Some(c) = cociente_area(a, b) {
-                partes.push(format!("Romberg firme {c:.2}x"));
-            }
+        if let (Some(a), Some(b)) = (firme_oa, firme_oc)
+            && let Some(c) = cociente_area(a, b)
+        {
+            partes.push(format!("Romberg firme {c:.2}x"));
         }
-        if let (Some(a), Some(b)) = (espuma_oa, espuma_oc) {
-            if let Some(c) = cociente_area(a, b) {
-                partes.push(format!("Romberg espuma {c:.2}x"));
-            }
+        if let (Some(a), Some(b)) = (espuma_oa, espuma_oc)
+            && let Some(c) = cociente_area(a, b)
+        {
+            partes.push(format!("Romberg espuma {c:.2}x"));
         }
-        if let (Some(a), Some(b)) = (firme_oa, espuma_oc) {
-            if let Some(c) = cociente_area(a, b) {
-                partes.push(format!("Ratio vestibular {c:.2}x"));
-            }
+        if let (Some(a), Some(b)) = (firme_oa, espuma_oc)
+            && let Some(c) = cociente_area(a, b)
+        {
+            partes.push(format!("Ratio vestibular {c:.2}x"));
         }
         if partes.is_empty() { None } else { Some(partes.join(" · ")) }
     }
@@ -811,23 +807,23 @@ impl eframe::App for PosturografoxApp {
             self.procesar_evento(evento);
         }
 
-        if let Some(rx) = &self.descubrimiento {
-            if let Ok(evento) = rx.try_recv() {
-                match evento {
-                    EventoDescubrimiento::Encontrado(puerto) => {
-                        if self.conexion.is_none() {
-                            self.puerto_seleccionado = Some(puerto);
-                            self.alternar_conexion();
-                        }
-                    }
-                    EventoDescubrimiento::Terminado => {
-                        if self.conexion.is_none() {
-                            self.estado = "No se encontró el posturógrafo: elegí el puerto a mano".to_string();
-                        }
+        if let Some(rx) = &self.descubrimiento
+            && let Ok(evento) = rx.try_recv()
+        {
+            match evento {
+                EventoDescubrimiento::Encontrado(puerto) => {
+                    if self.conexion.is_none() {
+                        self.puerto_seleccionado = Some(puerto);
+                        self.alternar_conexion();
                     }
                 }
-                self.descubrimiento = None;
+                EventoDescubrimiento::Terminado => {
+                    if self.conexion.is_none() {
+                        self.estado = "No se encontró el posturógrafo: elegí el puerto a mano".to_string();
+                    }
+                }
             }
+            self.descubrimiento = None;
         }
 
         if self.modo_juego {
