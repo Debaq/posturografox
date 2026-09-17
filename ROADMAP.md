@@ -120,7 +120,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R33 · Controles en su lugar.** "Espaciado" (cosmético del trazo) está en
   la tarjeta de detección automática; queda reubicado en Configuración.
   *(Resuelto junto con R6: ahora vive en la sección Gráficos.)*
-- [ ] **R34 · Modo paciente.** Pantalla completa con solo el COP, sin controles,
+- [x] **R34 · Modo paciente.** Pantalla completa con solo el COP, sin controles,
   para que el paciente vea su biofeedback sin distracciones.
 - [ ] **R35 · Tema oscuro y alto contraste.** Hoy la app fuerza tema claro.
 - [ ] **R36 · Límites de estabilidad: resultados.** Guardar distancia alcanzada y

@@ -318,6 +318,9 @@ pub struct PosturografoxApp {
 
     /// Qué grupo de tarjetas se está mostrando.
     pestana: Pestana,
+    /// Vista para el paciente: solo el COP, a pantalla completa, sin
+    /// controles ni números que distraigan del biofeedback.
+    modo_paciente: bool,
 
     // Modo juego (ver src/juego.rs)
     modo_juego: bool,
@@ -383,6 +386,7 @@ impl Default for PosturografoxApp {
             ejercicio: limites::EjercicioLimites::default(),
 
             pestana: Pestana::Examen,
+            modo_paciente: false,
             modo_juego: false,
             estado_juego: juego::EstadoJuego::default(),
         }
@@ -742,7 +746,51 @@ impl PosturografoxApp {
                 self.historial = historial::cargar();
                 self.mostrar_historial = !self.mostrar_historial;
             }
+            if ui
+                .button("👁 Modo paciente")
+                .on_hover_text("Solo el COP a pantalla completa, para que la persona se vea. ESC para volver.")
+                .clicked()
+            {
+                self.modo_paciente = true;
+            }
         });
+    }
+
+    /// Vista de biofeedback para el paciente: el gráfico COP ocupando todo,
+    /// sin tarjetas ni métricas. La toma sigue funcionando igual por detrás.
+    fn vista_paciente(&mut self, ui: &mut egui::Ui) {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.modo_paciente = false;
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(TARJETA_BG).inner_margin(egui::Margin::symmetric(16, 12)))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if let Some(progreso) = self.progreso_ensayo() {
+                        let texto = match progreso {
+                            ProgresoEnsayo::Acomodando(restante) => format!("Acomodate... {restante:.0} s"),
+                            ProgresoEnsayo::Grabando { restante_s, .. } => format!("Quedan {restante_s:.0} s"),
+                            ProgresoEnsayo::Libre(transcurrido) => format!("{transcurrido:.0} s"),
+                            ProgresoEnsayo::Completo => "Listo, ya podés bajarte".to_string(),
+                        };
+                        ui.label(egui::RichText::new(texto).size(22.0).strong().color(VERDE.gamma_multiply(0.85)));
+                    } else if self.conexion.is_some() {
+                        ui.label(
+                            egui::RichText::new("Subite a la plataforma").size(22.0).color(Color32::from_gray(120)),
+                        );
+                    } else {
+                        ui.label(egui::RichText::new("Sin conexión").size(22.0).color(CORAL));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Salir").clicked() {
+                            self.modo_paciente = false;
+                        }
+                        ui.label(egui::RichText::new("ESC para volver").small().color(Color32::from_gray(150)));
+                    });
+                });
+                let alto = ui.available_height();
+                self.plot_cop(ui, alto);
+            });
     }
 
     fn tarjetas_examen(&mut self, ui: &mut egui::Ui) {
@@ -1483,6 +1531,12 @@ impl eframe::App for PosturografoxApp {
                 }
             });
             ui.ctx().request_repaint_after(Duration::from_millis(16));
+            return;
+        }
+
+        if self.modo_paciente {
+            self.vista_paciente(ui);
+            ui.ctx().request_repaint_after(ESPERA_REPINTADO_ACTIVO);
             return;
         }
 
