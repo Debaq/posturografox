@@ -25,8 +25,17 @@ pub mod defecto {
     pub const VOLUMEN_EFECTOS: f32 = 0.6;
 }
 
+/// Clave con la que se guarda la configuración en el almacenamiento de
+/// `eframe` (ver `PosturografoxApp::save`).
+pub const CLAVE_ALMACEN: &str = "config";
+
 /// Configuración completa del programa.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// `serde(default)` hace que una versión vieja del archivo guardado siga
+/// cargando cuando se agregan opciones nuevas: las que falten toman su
+/// valor de fábrica en vez de descartar toda la configuración.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Config {
     // ── Plataforma ──────────────────────────────────────────────────────
     /// Distancia entre celdas en el eje medio-lateral.
@@ -203,6 +212,24 @@ pub fn duracion_legible(segundos: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn la_config_sobrevive_ida_y_vuelta_por_serde() {
+        let original = Config { ancho_cm: 52.5, duracion_partida_s: 180.0, mostrar_elipse: false, ..Config::default() };
+        let texto = ron::ser::to_string(&original).expect("serializar");
+        let recuperada: Config = ron::from_str(&texto).expect("deserializar");
+        assert_eq!(original, recuperada);
+    }
+
+    #[test]
+    fn una_config_guardada_sin_opciones_nuevas_carga_igual() {
+        // Simula un archivo guardado por una versión anterior: solo trae dos
+        // campos, el resto debe tomar el valor de fábrica y no fallar.
+        let recuperada: Config = ron::from_str("(ancho_cm: 60.0, prof_cm: 30.0)").expect("deserializar parcial");
+        assert_eq!(recuperada.ancho_cm, 60.0);
+        assert_eq!(recuperada.prof_cm, 30.0);
+        assert_eq!(recuperada.duracion_partida_s, defecto::DURACION_PARTIDA_S);
+    }
 
     #[test]
     fn restaurar_deja_la_config_igual_a_la_de_fabrica() {

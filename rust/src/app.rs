@@ -15,7 +15,7 @@ use std::time::Duration;
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
 
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::estabilometria::{
     Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
@@ -783,7 +783,29 @@ fn tarjeta_plot(
         });
 }
 
+impl PosturografoxApp {
+    /// Arranca restaurando la configuración guardada en la sesión anterior.
+    /// Si no hay nada guardado (primer arranque) o el archivo no se puede
+    /// leer, se queda con los valores de fábrica en vez de fallar.
+    pub fn nueva(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::default();
+        if let Some(almacen) = cc.storage
+            && let Some(guardada) = eframe::get_value::<Config>(almacen, config::CLAVE_ALMACEN)
+        {
+            app.buffer_crudo = VecDeque::with_capacity(guardada.muestras_tara);
+            app.buffer_arriba = VecDeque::with_capacity(guardada.muestras_tara);
+            app.config = guardada;
+        }
+        app
+    }
+}
+
 impl eframe::App for PosturografoxApp {
+    /// `eframe` la llama al cerrar y cada `auto_save_interval`.
+    fn save(&mut self, almacen: &mut dyn eframe::Storage) {
+        eframe::set_value(almacen, config::CLAVE_ALMACEN, &self.config);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let eventos: Vec<EventoSerie> = match &self.conexion {
             Some(c) => c.eventos.try_iter().collect(),

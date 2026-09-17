@@ -31,7 +31,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   plataforma, calibración, umbral de detección, trazo, duración del ensayo
   clínico y **duración de la partida del modo juego**. Hoy están repartidas
   entre tarjetas de la barra superior y constantes compiladas.
-- [ ] **R7 · Persistencia.** Guardar y restaurar toda la configuración entre
+- [x] **R7 · Persistencia.** Guardar y restaurar toda la configuración entre
   sesiones con `eframe::App::save` + `serde`. Hoy cada arranque vuelve a
   ganancias 1.0 y plataforma 40×40.
 - [ ] **R8 · Exportación fuera del directorio de trabajo.** Escribir en el

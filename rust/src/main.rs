@@ -29,7 +29,7 @@ fn main() -> eframe::Result<()> {
         opciones,
         Box::new(|cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::light());
-            Ok(Box::new(app::PosturografoxApp::default()))
+            Ok(Box::new(app::PosturografoxApp::nueva(cc)))
         }),
     )
 }
