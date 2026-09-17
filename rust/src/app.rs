@@ -443,7 +443,7 @@ impl PosturografoxApp {
                 Err(e) => self.estado = format!("Error al conectar: {e}"),
             }
         } else {
-            self.estado = "Elegí un puerto primero".to_string();
+            self.estado = "Seleccione un puerto primero".to_string();
         }
     }
 
@@ -802,15 +802,15 @@ impl PosturografoxApp {
                 ui.horizontal(|ui| {
                     if let Some(progreso) = self.progreso_ensayo() {
                         let texto = match progreso {
-                            ProgresoEnsayo::Acomodando(restante) => format!("Acomodate... {restante:.0} s"),
+                            ProgresoEnsayo::Acomodando(restante) => format!("Acomódese... {restante:.0} s"),
                             ProgresoEnsayo::Grabando { restante_s, .. } => format!("Quedan {restante_s:.0} s"),
                             ProgresoEnsayo::Libre(transcurrido) => format!("{transcurrido:.0} s"),
-                            ProgresoEnsayo::Completo => "Listo, ya podés bajarte".to_string(),
+                            ProgresoEnsayo::Completo => "Listo, ya puede bajar".to_string(),
                         };
                         ui.label(egui::RichText::new(texto).size(22.0).strong().color(VERDE.gamma_multiply(0.85)));
                     } else if self.conexion.is_some() {
                         ui.label(
-                            egui::RichText::new("Subite a la plataforma").size(22.0).color(Color32::from_gray(120)),
+                            egui::RichText::new("Súbase a la plataforma").size(22.0).color(Color32::from_gray(120)),
                         );
                     } else {
                         ui.label(egui::RichText::new("Sin conexión").size(22.0).color(CORAL));
@@ -844,10 +844,10 @@ impl PosturografoxApp {
         });
         tarjeta(ui, "CTSIB", LILA, |ui| {
             ui.label("ℹ").on_hover_text(
-                "Examen guiado de 4 condiciones. Elegí un paso y apretá 'Iniciar \
-                     prueba': recién ahí cuenta pararse en la plataforma como resultado \
-                     del CTSIB (sin armarlo, pararse solo muestra el COP en vivo, no \
-                     graba nada acá). Al bajarte se guarda ese paso y salta sola al \
+                "Examen guiado de 4 condiciones. Seleccione un paso y presione 'Iniciar \
+                     prueba': recién ahí cuenta subirse a la plataforma como resultado \
+                     del CTSIB (sin armarlo, subirse solo muestra el COP en vivo, no \
+                     graba nada aquí). Al bajar se guarda ese paso y salta sola al \
                      siguiente pendiente. El ✓ marca los pasos ya hechos.",
             );
             ui.vertical(|ui| {
@@ -865,7 +865,7 @@ impl PosturografoxApp {
 
                 ui.add_space(4.0);
                 if self.ctsib_armado {
-                    let estado = if self.ocupado { "grabando..." } else { "subite a la plataforma" };
+                    let estado = if self.ocupado { "grabando..." } else { "súbase a la plataforma" };
                     ui.label(format!(
                         "Prueba armada: {} + {} — {estado}",
                         self.superficie.etiqueta(),
@@ -1068,7 +1068,7 @@ impl PosturografoxApp {
                 }
             } else if ui
                 .add_enabled(self.ocupado, egui::Button::new("Iniciar ejercicio"))
-                .on_hover_text("Parate en la plataforma primero")
+                .on_hover_text("Primero súbase a la plataforma")
                 .clicked()
             {
                 self.ejercicio.iniciar();
@@ -1191,7 +1191,7 @@ impl PosturografoxApp {
 
         egui::Window::new("📈 Historial del paciente").open(&mut abierta).default_width(620.0).show(ctx, |ui| {
             if paciente.trim().is_empty() {
-                ui.label("Escribí el identificador del paciente para ver su historial.");
+                ui.label("Escriba el identificador del paciente para ver su historial.");
                 let otros = historial::pacientes(&self.historial);
                 if !otros.is_empty() {
                     ui.add_space(6.0);
@@ -1570,7 +1570,7 @@ impl eframe::App for PosturografoxApp {
                 }
                 EventoDescubrimiento::Terminado => {
                     if self.conexion.is_none() {
-                        self.estado = "No se encontró el posturógrafo: elegí el puerto a mano".to_string();
+                        self.estado = "No se encontró el posturógrafo: seleccione el puerto a mano".to_string();
                     }
                 }
             }

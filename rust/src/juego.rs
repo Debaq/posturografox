@@ -619,9 +619,9 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
             }
         }
         let motivo = if entrada.conectado {
-            ("Subite a la plataforma para jugar", "El zorro se mueve con tu peso")
+            ("Súbase a la plataforma para jugar", "El zorro se mueve con su peso")
         } else {
-            ("Conectá el posturógrafo para jugar", "En cuanto detecte señal, arranca solo")
+            ("Conecte el posturógrafo para jugar", "En cuanto detecte señal, arranca solo")
         };
         dibujar_espera(ui, &sprites.zorro, motivo.0, motivo.1);
         return salir_tecla;
@@ -1191,7 +1191,7 @@ fn dibujar_game_over(
         );
     };
 
-    texto_centrado("💥 PERDISTE EL EQUILIBRIO", 0.07, (alto * 0.028).clamp(15.0, 22.0), ROJO_GOLPE);
+    texto_centrado("💥 PERDIÓ EL EQUILIBRIO", 0.07, (alto * 0.028).clamp(15.0, 22.0), ROJO_GOLPE);
 
     // Reproduce la caída una vez (los primeros ~0.8s de la pantalla) y se
     // queda en el último frame (tirado, mareado) por el resto de la cuenta
@@ -1307,7 +1307,7 @@ fn dibujar_victoria(
 
     // El texto sale de la duración real de la partida (configurable), así no
     // puede contradecir a lo que se jugó.
-    let titulo = format!("🏆 ¡AGUANTASTE {}!", crate::config::duracion_legible(duracion_partida_s).to_uppercase());
+    let titulo = format!("🏆 ¡RESISTIÓ {}!", crate::config::duracion_legible(duracion_partida_s).to_uppercase());
     texto_centrado(&titulo, 0.07, (alto * 0.028).clamp(15.0, 22.0), DORADO);
 
     // Celebración en loop mientras dura la pantalla.

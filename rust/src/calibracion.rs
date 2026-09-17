@@ -98,12 +98,12 @@ pub enum Paso {
 impl Paso {
     pub fn instruccion(self, lado_cm: f64, masa_kg: f64) -> String {
         match self {
-            Paso::Vacia => "Dejá la plataforma vacía y capturá el cero.".to_string(),
+            Paso::Vacia => "Deje la plataforma vacía y capture el cero.".to_string(),
             Paso::Celda(i) => format!(
-                "Apoyá la masa de {masa_kg:.2} kg ({lado_cm:.0}×{lado_cm:.0} cm) centrada sobre la celda {} y capturá.",
+                "Apoye la masa de {masa_kg:.2} kg ({lado_cm:.0}×{lado_cm:.0} cm) centrada sobre la celda {} y capture.",
                 ETIQUETAS[i.min(N_CELDAS - 1)]
             ),
-            Paso::Resultado => "Listo: revisá el peso medido y guardá.".to_string(),
+            Paso::Resultado => "Listo: revise el peso medido y guarde.".to_string(),
         }
     }
 
@@ -189,7 +189,7 @@ impl Asistente {
                 let delta: [f64; N_CELDAS] = std::array::from_fn(|j| promedio[j] - self.vacia[j]);
                 let total: f64 = delta.iter().sum();
                 if total.abs() < 1e-6 {
-                    self.aviso = "No se nota la masa sobre la plataforma: revisá que esté apoyada".to_string();
+                    self.aviso = "No se nota la masa sobre la plataforma: revise que esté apoyada".to_string();
                     self.limpiar_captura();
                     return false;
                 }
@@ -200,7 +200,7 @@ impl Asistente {
                     self.resultado = resolver_ganancias(&self.deltas, masa_kg);
                     if self.resultado.is_none() {
                         self.aviso =
-                            "No se pudo resolver la calibración: repetí las capturas apoyando la masa bien centrada \
+                            "No se pudo resolver la calibración: repita las capturas apoyando la masa bien centrada \
                              sobre cada celda"
                                 .to_string();
                     }

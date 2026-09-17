@@ -187,7 +187,7 @@ pub fn ventana(ctx: &egui::Context, cfg: &mut Config, abierta: &mut bool, acento
 fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.label(
-            egui::RichText::new("Todas las opciones del programa viven acá. Se guardan al cerrar la app.")
+            egui::RichText::new("Todas las opciones del programa viven aquí. Se guardan al cerrar la app.")
                 .small()
                 .color(Color32::from_gray(120)),
         );
