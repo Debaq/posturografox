@@ -16,7 +16,7 @@ use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, Polygon, VLine};
 
 use crate::calibracion::{self, Asistente};
-use crate::config::{self, Config};
+use crate::config::{self, Config, Tema};
 use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::estabilometria::{
     Acumulador, Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
@@ -74,9 +74,38 @@ const PASOS_CTSIB: [(Superficie, Condicion); 4] = [
     (Superficie::Espuma, Condicion::OjosCerrados),
 ];
 
-// ── Superficies: fondo tipo "dashboard" + tarjetas blancas con sombra ───────
-const LIENZO: Color32 = Color32::from_rgb(235, 238, 242);
-const TARJETA_BG: Color32 = Color32::from_rgb(252, 253, 254);
+// ── Superficies: fondo tipo "dashboard" + tarjetas con sombra ───────────────
+// Los acentos (azul, naranja, ...) se leen bien sobre cualquiera de los tres
+// temas; lo que cambia son las superficies y los `Visuals` de egui.
+const LIENZO_CLARO: Color32 = Color32::from_rgb(235, 238, 242);
+const TARJETA_CLARA: Color32 = Color32::from_rgb(252, 253, 254);
+const LIENZO_OSCURO: Color32 = Color32::from_rgb(24, 27, 32);
+const TARJETA_OSCURA: Color32 = Color32::from_rgb(34, 38, 45);
+
+/// Colores de fondo (lienzo, tarjeta) de cada tema.
+fn superficies(tema: Tema) -> (Color32, Color32) {
+    match tema {
+        Tema::Claro => (LIENZO_CLARO, TARJETA_CLARA),
+        Tema::Oscuro => (LIENZO_OSCURO, TARJETA_OSCURA),
+        // Alto contraste: negro puro contra los acentos, sin grises intermedios
+        // que se pierdan en una pantalla mala o con poca visión.
+        Tema::AltoContraste => (Color32::BLACK, Color32::from_rgb(12, 12, 12)),
+    }
+}
+
+/// `Visuals` de egui que acompañan al tema (texto, botones, bordes).
+fn visuales(tema: Tema) -> egui::Visuals {
+    let mut visuals = if tema.es_oscuro() { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let (lienzo, tarjeta) = superficies(tema);
+    visuals.panel_fill = lienzo;
+    visuals.window_fill = tarjeta;
+    visuals.extreme_bg_color = tarjeta;
+    if tema == Tema::AltoContraste {
+        visuals.override_text_color = Some(Color32::WHITE);
+        visuals.widgets.noninteractive.bg_stroke.color = Color32::from_gray(160);
+    }
+    visuals
+}
 
 fn sombra_tarjeta() -> egui::Shadow {
     egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(22) }
@@ -86,8 +115,9 @@ fn sombra_tarjeta() -> egui::Shadow {
 /// en vez de tirarlos todos en una única fila (look "tablero de instrumentos"
 /// en lugar de una barra de widgets sin jerarquía visual).
 fn tarjeta(ui: &mut egui::Ui, titulo: &str, acento: Color32, contenido: impl FnOnce(&mut egui::Ui)) {
+    let fondo = ui.visuals().window_fill;
     egui::Frame::new()
-        .fill(TARJETA_BG)
+        .fill(fondo)
         .stroke(egui::Stroke::new(1.2, acento.gamma_multiply(0.55)))
         .corner_radius(10.0)
         .shadow(sombra_tarjeta())
@@ -321,6 +351,9 @@ pub struct PosturografoxApp {
     /// Vista para el paciente: solo el COP, a pantalla completa, sin
     /// controles ni números que distraigan del biofeedback.
     modo_paciente: bool,
+    /// Último tema aplicado a egui, para no reconstruir los `Visuals` en
+    /// cada frame.
+    tema_aplicado: Option<Tema>,
 
     // Modo juego (ver src/juego.rs)
     modo_juego: bool,
@@ -387,6 +420,7 @@ impl Default for PosturografoxApp {
 
             pestana: Pestana::Examen,
             modo_paciente: false,
+            tema_aplicado: None,
             modo_juego: false,
             estado_juego: juego::EstadoJuego::default(),
         }
@@ -763,7 +797,7 @@ impl PosturografoxApp {
             self.modo_paciente = false;
         }
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(TARJETA_BG).inner_margin(egui::Margin::symmetric(16, 12)))
+            .frame(egui::Frame::new().fill(ui.visuals().window_fill).inner_margin(egui::Margin::symmetric(16, 12)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if let Some(progreso) = self.progreso_ensayo() {
@@ -1261,8 +1295,9 @@ impl PosturografoxApp {
             return;
         };
         ui.add_space(10.0);
+        let fondo = ui.visuals().window_fill;
         egui::Frame::new()
-            .fill(TARJETA_BG)
+            .fill(fondo)
             .stroke(egui::Stroke::new(1.2, acento.gamma_multiply(0.55)))
             .corner_radius(10.0)
             .shadow(sombra_tarjeta())
@@ -1445,8 +1480,8 @@ fn tarjeta_plot(
     contenido: impl FnOnce(&mut egui::Ui, f32),
 ) {
     egui::Frame::new()
-        .fill(TARJETA_BG)
-        .stroke(egui::Stroke::new(1.0, Color32::from_gray(224)))
+        .fill(ui.visuals().window_fill)
+        .stroke(egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color))
         .corner_radius(10.0)
         .shadow(sombra_tarjeta())
         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -1480,6 +1515,11 @@ impl eframe::App for PosturografoxApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if self.tema_aplicado != Some(self.config.tema) {
+            ui.ctx().set_visuals(visuales(self.config.tema));
+            self.tema_aplicado = Some(self.config.tema);
+        }
+
         let eventos: Vec<EventoSerie> = match &self.conexion {
             Some(c) => c.eventos().try_iter().collect(),
             None => Vec::new(),
@@ -1525,7 +1565,7 @@ impl eframe::App for PosturografoxApp {
                 volumen_musica: self.config.volumen_musica,
                 volumen_efectos: self.config.volumen_efectos,
             };
-            egui::CentralPanel::default().frame(egui::Frame::new().fill(TARJETA_BG)).show(ui, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().window_fill)).show(ui, |ui| {
                 if juego::mostrar(ui, &mut self.estado_juego, entrada) {
                     self.modo_juego = false;
                 }
@@ -1545,7 +1585,8 @@ impl eframe::App for PosturografoxApp {
             self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, self.config.ancho_cm, self.config.prof_cm, dt);
         }
 
-        let fondo = |margen| egui::Frame::new().fill(LIENZO).inner_margin(margen);
+        let lienzo = ui.visuals().panel_fill;
+        let fondo = move |margen| egui::Frame::new().fill(lienzo).inner_margin(margen);
 
         egui::Panel::top("controles").frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             self.barra_controles(ui);

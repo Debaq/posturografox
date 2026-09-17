@@ -56,7 +56,7 @@ fn main() -> eframe::Result<()> {
         &format!("Posturografox {}", app::VERSION),
         opciones,
         Box::new(|cc| {
-            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            // El tema lo aplica la app según la configuración guardada.
             let mut aplicacion = app::PosturografoxApp::nueva(cc);
             if simular {
                 aplicacion.conectar_simulador();

@@ -122,7 +122,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   *(Resuelto junto con R6: ahora vive en la sección Gráficos.)*
 - [x] **R34 · Modo paciente.** Pantalla completa con solo el COP, sin controles,
   para que el paciente vea su biofeedback sin distracciones.
-- [ ] **R35 · Tema oscuro y alto contraste.** Hoy la app fuerza tema claro.
+- [x] **R35 · Tema oscuro y alto contraste.** Hoy la app fuerza tema claro.
 - [ ] **R36 · Límites de estabilidad: resultados.** Guardar distancia alcanzada y
   déficits por dirección, mostrarlos y exportarlos; hoy solo se mide el
   tiempo por objetivo y se pierde al salir.

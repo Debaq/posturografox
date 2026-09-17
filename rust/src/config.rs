@@ -21,6 +21,7 @@ pub mod defecto {
     pub const ESPACIADO_PUNTOS: usize = 8;
     pub const VENTANA_TIEMPO_S: f64 = 20.0;
     pub const MOSTRAR_ELIPSE: bool = true;
+    pub const TEMA: super::Tema = super::Tema::Claro;
     pub const MASA_CALIBRACION_KG: f64 = 1.0;
     pub const LADO_PATRON_CM: f64 = 10.0;
     pub const ENSAYO_DURACION_FIJA: bool = true;
@@ -31,6 +32,31 @@ pub mod defecto {
     pub const DURACION_PARTIDA_S: f32 = 60.0;
     pub const VOLUMEN_MUSICA: f32 = 0.35;
     pub const VOLUMEN_EFECTOS: f32 = 0.6;
+}
+
+/// Aspecto de la aplicación. El tema claro es el de siempre; el oscuro sirve
+/// para salas con poca luz (habitual al tomar exámenes con ojos cerrados) y
+/// el de alto contraste, para pantallas malas o vista reducida.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Tema {
+    #[default]
+    Claro,
+    Oscuro,
+    AltoContraste,
+}
+
+impl Tema {
+    pub fn etiqueta(self) -> &'static str {
+        match self {
+            Tema::Claro => "Claro",
+            Tema::Oscuro => "Oscuro",
+            Tema::AltoContraste => "Alto contraste",
+        }
+    }
+
+    pub fn es_oscuro(self) -> bool {
+        matches!(self, Tema::Oscuro | Tema::AltoContraste)
+    }
 }
 
 /// Clave con la que se guarda la configuración en el almacenamiento de
@@ -82,6 +108,8 @@ pub struct Config {
     pub ventana_tiempo_s: f64,
     /// Elipse de confianza 95% sobre el trazo.
     pub mostrar_elipse: bool,
+    /// Aspecto de la aplicación.
+    pub tema: Tema,
 
     // ── Ensayo clínico ──────────────────────────────────────────────────
     /// El registro se cierra solo al cumplirse `duracion_ensayo_s`. Sin esto,
@@ -123,6 +151,7 @@ impl Default for Config {
             espaciado_puntos: defecto::ESPACIADO_PUNTOS,
             ventana_tiempo_s: defecto::VENTANA_TIEMPO_S,
             mostrar_elipse: defecto::MOSTRAR_ELIPSE,
+            tema: defecto::TEMA,
             ensayo_duracion_fija: defecto::ENSAYO_DURACION_FIJA,
             duracion_ensayo_s: defecto::DURACION_ENSAYO_S,
             descarte_inicial_s: defecto::DESCARTE_INICIAL_S,
@@ -231,6 +260,14 @@ fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
             ui.end_row();
             ui.label("Elipse de confianza 95%");
             ui.checkbox(&mut cfg.mostrar_elipse, "");
+            ui.end_row();
+            ui.label("Tema")
+                .on_hover_text("El oscuro ayuda en salas con poca luz; el de alto contraste, con vista reducida");
+            egui::ComboBox::from_id_salt("combo_tema").selected_text(cfg.tema.etiqueta()).show_ui(ui, |ui| {
+                for tema in [Tema::Claro, Tema::Oscuro, Tema::AltoContraste] {
+                    ui.selectable_value(&mut cfg.tema, tema, tema.etiqueta());
+                }
+            });
             ui.end_row();
         });
 
