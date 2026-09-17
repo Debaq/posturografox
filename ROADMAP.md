@@ -93,7 +93,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 4 — Rendimiento
 
-- [ ] **R25 · Degradé del trazo sin HashMap.** Hoy se reconstruye un mapa de
+- [x] **R25 · Degradé del trazo sin HashMap.** Hoy se reconstruye un mapa de
   hasta 20.000 entradas por frame, y dos puntos idénticos colisionan y toman
   el color equivocado.
 - [ ] **R26 · Métricas incrementales.** Acumuladores O(1) por muestra en vez de

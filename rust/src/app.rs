@@ -9,11 +9,11 @@
 //!   COP_ap (antero-posterior, + = frente) = ((fd+fi)-(bd+bi))/suma * profundidad/2
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use egui::Color32;
-use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
+use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoints, Points, Polygon, VLine};
 
 use crate::calibracion::{self, Asistente};
 use crate::config::{self, Config};
@@ -181,6 +181,29 @@ fn abrir_en_el_sistema(ruta: &std::path::Path) {
     proceso.args(comando.1);
     proceso.arg(ruta);
     let _ = proceso.spawn();
+}
+
+/// En cuántos tramos se parte el trazo para el degradé de antigüedad.
+const TRAMOS_TRAZO: usize = 24;
+/// Color de la cola del trazo (lo más viejo), casi transparente.
+const COLOR_TRAZO_VIEJO: Color32 = Color32::from_rgba_premultiplied(9, 15, 21, 25);
+
+/// Parte el trazo en `tramos` pedazos consecutivos, repitiendo el último
+/// punto de cada uno al principio del siguiente para que no queden huecos.
+fn segmentar_trazo(xs: &[f64], ys: &[f64], tramos: usize) -> Vec<Vec<[f64; 2]>> {
+    let n = xs.len().min(ys.len());
+    if n < 2 || tramos == 0 {
+        return Vec::new();
+    }
+    let por_tramo = n.div_ceil(tramos).max(2);
+    let mut salida = Vec::new();
+    let mut inicio = 0;
+    while inicio + 1 < n {
+        let fin = (inicio + por_tramo).min(n);
+        salida.push((inicio..fin).map(|i| [xs[i], ys[i]]).collect());
+        inicio = fin - 1; // comparte el punto de unión con el tramo siguiente
+    }
+    salida
 }
 
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
@@ -1217,21 +1240,14 @@ impl PosturografoxApp {
 
         let xs: Vec<f64> = self.trazo_x.iter().copied().collect();
         let ys: Vec<f64> = self.trazo_y.iter().copied().collect();
-        let n = xs.len();
 
-        // Color por antigüedad: cola desvanecida -> cabeza (más reciente) saturada,
-        // como un "cometa" que deja ver hacia dónde se mueve el COP ahora mismo.
-        let color_vieja = Color32::from_rgba_unmultiplied(AZUL.r(), AZUL.g(), AZUL.b(), 25);
-        let color_nueva = AZUL;
-        let fraccion: HashMap<(u64, u64), f32> = xs
-            .iter()
-            .zip(ys.iter())
-            .enumerate()
-            .map(|(i, (&x, &y))| ((x.to_bits(), y.to_bits()), i as f32 / n.max(1) as f32))
-            .collect();
-        let fraccion = Arc::new(fraccion);
-
-        let trazo: PlotPoints = xs.iter().zip(ys.iter()).map(|(&x, &y)| [x, y]).collect();
+        // Color por antigüedad: cola desvanecida -> cabeza (más reciente)
+        // saturada, como un "cometa" que deja ver hacia dónde se mueve el COP
+        // ahora mismo. Se arma por tramos, cada uno con su color: antes había
+        // un degradé punto por punto que reconstruía un HashMap de hasta 20.000
+        // entradas en cada frame y, como la clave eran los bits de (x, y), dos
+        // puntos idénticos compartían entrada y tomaban el color equivocado.
+        let tramos = segmentar_trazo(&xs, &ys, TRAMOS_TRAZO);
         let paso = self.config.espaciado_puntos.max(1);
         let puntos: PlotPoints = xs.iter().zip(ys.iter()).step_by(paso).map(|(&x, &y)| [x, y]).collect();
         let actual: PlotPoints = vec![[self.ultimo_ml, self.ultimo_ap]].into();
@@ -1264,13 +1280,12 @@ impl PosturografoxApp {
                     );
                 }
 
-                plot_ui.line(Line::new("Trazo", trazo).width(1.5).gradient_color(
-                    Arc::new(move |p: PlotPoint| {
-                        let t = fraccion.get(&(p.x.to_bits(), p.y.to_bits())).copied().unwrap_or(1.0);
-                        lerp_color(color_vieja, color_nueva, t)
-                    }),
-                    false,
-                ));
+                for (i, tramo) in tramos.into_iter().enumerate() {
+                    let antiguedad = if TRAMOS_TRAZO > 1 { i as f32 / (TRAMOS_TRAZO - 1) as f32 } else { 1.0 };
+                    let color = lerp_color(COLOR_TRAZO_VIEJO, AZUL, antiguedad);
+                    let nombre = if i + 1 == TRAMOS_TRAZO { "Trazo" } else { "" };
+                    plot_ui.line(Line::new(nombre, PlotPoints::from(tramo)).width(1.5).color(color));
+                }
                 plot_ui.points(
                     Points::new("", puntos)
                         .color(Color32::from_rgba_unmultiplied(AZUL.r(), AZUL.g(), AZUL.b(), 190))
@@ -1486,6 +1501,29 @@ impl eframe::App for PosturografoxApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_tramos_del_trazo_cubren_todo_sin_dejar_huecos() {
+        let xs: Vec<f64> = (0..100).map(|i| i as f64).collect();
+        let ys = xs.clone();
+        let tramos = segmentar_trazo(&xs, &ys, 8);
+
+        assert!(!tramos.is_empty());
+        assert_eq!(tramos.first().unwrap().first().unwrap()[0], 0.0);
+        assert_eq!(tramos.last().unwrap().last().unwrap()[0], 99.0);
+        // El final de cada tramo es el comienzo del siguiente: sin eso, la
+        // línea quedaría cortada entre tramo y tramo.
+        for par in tramos.windows(2) {
+            assert_eq!(par[0].last().unwrap(), par[1].first().unwrap());
+        }
+    }
+
+    #[test]
+    fn un_trazo_sin_dos_puntos_no_genera_tramos() {
+        assert!(segmentar_trazo(&[], &[], 8).is_empty());
+        assert!(segmentar_trazo(&[1.0], &[1.0], 8).is_empty());
+        assert!(segmentar_trazo(&[1.0, 2.0], &[1.0, 2.0], 0).is_empty());
+    }
 
     #[test]
     fn la_fecha_legible_convierte_bien_epochs_conocidos() {
