@@ -42,7 +42,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 2 — Adquisición robusta
 
-- [ ] **R10 · Parser de línea testeable.** Extraer el parseo del hilo lector a
+- [x] **R10 · Parser de línea testeable.** Extraer el parseo del hilo lector a
   una función pura con tests (encabezado, comentarios, línea truncada,
   campos de más) y **rechazar NaN/Inf**, que hoy se cuelan y envenenan
   todas las métricas en silencio.
