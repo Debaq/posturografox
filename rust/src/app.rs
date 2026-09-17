@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::Color32;
 use egui_plot::{HLine, Legend, Line, MarkerShape, Plot, PlotBounds, PlotPoint, PlotPoints, Points, Polygon, VLine};
@@ -28,6 +28,18 @@ use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 /// Única fuente de verdad de la versión: la de `Cargo.toml`. Se muestra en el
 /// título de la ventana y en la barra de estado.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Cuánto se espera entre reintentos de reconexión.
+const ESPERA_RECONEXION: Duration = Duration::from_millis(1500);
+/// Tras estos reintentos fallidos en el mismo puerto, se vuelve a buscar.
+const INTENTOS_ANTES_DE_BUSCAR: u32 = 4;
+
+/// Reconexión pendiente tras una caída que nadie pidió.
+struct Reconexion {
+    puerto: String,
+    intentos: u32,
+    proximo: Instant,
+}
 
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
@@ -136,6 +148,8 @@ pub struct PosturografoxApp {
     estado: String,
     // Búsqueda automática del puerto al arrancar (ver src/descubrimiento.rs)
     descubrimiento: Option<mpsc::Receiver<EventoDescubrimiento>>,
+    /// Reintento automático tras una desconexión no pedida (ver `reconectar`).
+    reconexion: Option<Reconexion>,
 
     // Calibración: offset (tara por software); la ganancia por canal vive en `config`
     offset: [f64; 4],
@@ -206,6 +220,7 @@ impl Default for PosturografoxApp {
             conexion: None,
             estado: "Buscando posturógrafo...".to_string(),
             descubrimiento: Some(descubrimiento::iniciar()),
+            reconexion: None,
 
             offset: [0.0; 4],
             buffer_crudo: VecDeque::with_capacity(config.muestras_tara),
@@ -252,8 +267,10 @@ impl PosturografoxApp {
     fn alternar_conexion(&mut self) {
         if self.conexion.is_some() {
             self.conexion = None; // Drop detiene el hilo lector
+            self.reconexion = None; // desconexión pedida: no reintentar sola
             self.estado = "Desconectado".to_string();
         } else if let Some(puerto) = self.puerto_seleccionado.clone() {
+            self.reconexion = None;
             match ConexionSerie::conectar(&puerto) {
                 Ok(c) => {
                     self.conexion = Some(c);
@@ -264,6 +281,43 @@ impl PosturografoxApp {
         } else {
             self.estado = "Elegí un puerto primero".to_string();
         }
+    }
+
+    /// Programa el reintento automático tras una caída no pedida (el cable se
+    /// soltó, el ESP32 se reinició). `motivo` se muestra en la barra de estado.
+    fn programar_reconexion(&mut self, motivo: &str) {
+        let Some(puerto) = self.puerto_seleccionado.clone() else { return };
+        let intentos = self.reconexion.as_ref().map_or(0, |r| r.intentos);
+        self.reconexion = Some(Reconexion { puerto, intentos, proximo: Instant::now() + ESPERA_RECONEXION });
+        self.estado = format!("{motivo}: reintentando conexión...");
+    }
+
+    /// Reintenta la conexión cuando toca. Tras varios fallos seguidos vuelve a
+    /// buscar el puerto: al reenumerar el USB, el dispositivo puede aparecer
+    /// con otro nombre (ttyACM0 -> ttyACM1, COM3 -> COM4).
+    fn reconectar(&mut self) {
+        let Some(pendiente) = &self.reconexion else { return };
+        if Instant::now() < pendiente.proximo {
+            return;
+        }
+        let puerto = pendiente.puerto.clone();
+        let intentos = pendiente.intentos + 1;
+
+        if let Ok(conexion) = ConexionSerie::conectar(&puerto) {
+            self.conexion = Some(conexion);
+            self.reconexion = None;
+            self.estado = format!("Reconectado a {puerto}");
+            return;
+        }
+
+        self.puertos = puertos_usables();
+        if intentos >= INTENTOS_ANTES_DE_BUSCAR {
+            self.reconexion = None;
+            self.estado = "No responde en el mismo puerto: buscando de nuevo...".to_string();
+            self.descubrimiento = Some(descubrimiento::iniciar());
+            return;
+        }
+        self.reconexion = Some(Reconexion { puerto, intentos, proximo: Instant::now() + ESPERA_RECONEXION });
     }
 
     fn tara_software(&mut self, usar_muestras_de_carga: bool) {
@@ -414,7 +468,7 @@ impl PosturografoxApp {
             }
             EventoSerie::Desconectado => {
                 self.conexion = None;
-                self.estado = "Desconectado".to_string();
+                self.programar_reconexion("Se desconectó");
             }
             EventoSerie::MensajeFirmware(m) => {
                 if let Some(modo) = ModoFirmware::desde_mensaje(&m) {
@@ -424,7 +478,7 @@ impl PosturografoxApp {
             }
             EventoSerie::Error(e) => {
                 self.conexion = None;
-                self.estado = format!("Error: {e}");
+                self.programar_reconexion(&format!("Error: {e}"));
             }
             EventoSerie::Muestra(m) => self.procesar_muestra(m),
         }
@@ -883,6 +937,10 @@ impl eframe::App for PosturografoxApp {
         };
         for evento in eventos {
             self.procesar_evento(evento);
+        }
+
+        if self.conexion.is_none() {
+            self.reconectar();
         }
 
         if let Some(rx) = &self.descubrimiento
