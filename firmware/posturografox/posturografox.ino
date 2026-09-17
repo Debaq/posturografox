@@ -1,7 +1,13 @@
 /*
   Posturógrafo - ESP32-C3 Super Mini + 4 celdas de carga + 4 HX711 (SCK compartido)
   ----------------------------------------------------------------------
-  Salida por consola (CSV):  fd,fi,bd,bi
+  Salida por consola (CSV):  n,t_us,fd,fi,bd,bi
+    n    = número de muestra, arranca en 0 y sube de a 1 sin saltos. Si al
+           host le falta un número, sabe que perdió esa muestra (línea
+           corrupta, buffer lleno) en vez de creer que hubo una pausa.
+    t_us = micros() en el momento de leer los HX711. Es el reloj bueno: el
+           host recibe las muestras a los tirones por el buffer del USB CDC,
+           así que fecharlas en el PC infla o desinfla la velocidad de sway.
     f = frontal, b = posterior (back), d = derecha, i = izquierda
 
   Lectura en paralelo con reloj común: se espera a que los 4 HX711 estén
@@ -70,7 +76,7 @@
 
 // =================== CONFIGURACIÓN ===================
 #define BAUDIOS          115200
-#define ID_FIRMWARE      "POSTUROGRAFOX,1"  // saludo de identificación (comando 'i' o al arrancar)
+#define ID_FIRMWARE      "POSTUROGRAFOX,2"  // saludo de identificación; el 2 = formato n,t_us,fd,fi,bd,bi
 #define N_TARA           20     // lecturas promediadas para la tara
 #define PULSOS_EXTRA     1      // 1 = canal A ganancia 128 | 3 = canal A ganancia 64 | 2 = canal B ganancia 32
 #define IMPRIMIR_CRUDO   0      // 1 = cuentas crudas al inicio, 0 = valores calibrados
@@ -99,6 +105,13 @@ unsigned long ultimoResync   = 0;
 unsigned long inicioConteo   = 0;
 unsigned long muestrasConteo = 0;
 
+// Número de muestra que se manda en cada línea. No se reinicia nunca (ni con
+// tara ni con resync): el host detecta muestras perdidas viendo si el número
+// pega un salto.
+unsigned long numeroMuestra = 0;
+// micros() del momento de la conversión, lo carga leerTodos().
+unsigned long tMuestraUs = 0;
+
 portMUX_TYPE muxHX = portMUX_INITIALIZER_UNLOCKED;
 
 // ¿Los 4 HX711 tienen un dato listo? (DOUT en bajo)
@@ -123,6 +136,10 @@ bool leerTodos(long crudo[N_SENS]) {
     if (millis() - t0 > TIMEOUT_MS) return false;
     delay(1);
   }
+  // Instante real de la conversión, antes de leer los bits: esta es la marca
+  // de tiempo que viaja con la muestra. Fecharla cuando la recibe el PC daría
+  // un tiempo con el jitter del USB CDC encima.
+  tMuestraUs = micros();
 
   uint32_t val[N_SENS] = { 0, 0, 0, 0 };
 
@@ -184,7 +201,7 @@ void tarar() {
 }
 
 void imprimirEncabezado() {
-  Serial.printf("%s,%s,%s,%s\n", ETQ[0], ETQ[1], ETQ[2], ETQ[3]);
+  Serial.printf("n,t_us,%s,%s,%s,%s\n", ETQ[0], ETQ[1], ETQ[2], ETQ[3]);
 }
 
 // Saludo de identificación: permite que el host distinga este dispositivo
@@ -279,13 +296,16 @@ void loop() {
     return;
   }
   muestrasConteo++;
+  numeroMuestra++;
 
   if (modoCrudo) {
-    Serial.printf("%ld,%ld,%ld,%ld\n", crudo[0], crudo[1], crudo[2], crudo[3]);
+    Serial.printf("%lu,%lu,%ld,%ld,%ld,%ld\n",
+                  numeroMuestra, tMuestraUs, crudo[0], crudo[1], crudo[2], crudo[3]);
   } else {
     float v[N_SENS];
     for (int i = 0; i < N_SENS; i++) v[i] = (crudo[i] - offsetTara[i]) / CAL[i];
-    Serial.printf("%.*f,%.*f,%.*f,%.*f\n",
+    Serial.printf("%lu,%lu,%.*f,%.*f,%.*f,%.*f\n",
+                  numeroMuestra, tMuestraUs,
                   DECIMALES, v[0], DECIMALES, v[1], DECIMALES, v[2], DECIMALES, v[3]);
   }
 }

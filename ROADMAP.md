@@ -46,7 +46,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   una función pura con tests (encabezado, comentarios, línea truncada,
   campos de más) y **rechazar NaN/Inf**, que hoy se cuelan y envenenan
   todas las métricas en silencio.
-- [ ] **R11 · Firmware: secuencia y marca de tiempo.** Agregar número de muestra
+- [x] **R11 · Firmware: secuencia y marca de tiempo.** Agregar número de muestra
   y `micros()` a cada línea CSV.
 - [ ] **R12 · Host: base de tiempo del dispositivo.** Usar el reloj del firmware
   en vez de `Instant::now()` del host (que agrupa muestras por el buffering
