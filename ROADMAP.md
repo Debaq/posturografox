@@ -60,7 +60,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   muestreo.
 - [x] **R15 · Reconexión automática.** Reintentar la conexión cuando el USB se
   desenchufa y vuelve, sin tener que apretar nada.
-- [ ] **R16 · Capa de transporte y simulador.** Trait `Transporte` (serie /
+- [x] **R16 · Capa de transporte y simulador.** Trait `Transporte` (serie /
   simulado / reproducción de CSV) y modo `--simular` para desarrollar,
   demostrar y testear sin la plataforma física. Además deja preparada la
   migración a Bluetooth descrita en `firmware/BLUETOOTH.md`.

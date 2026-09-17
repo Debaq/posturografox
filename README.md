@@ -26,6 +26,15 @@ sudo apt-get install -y libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
   libudev-dev pkg-config
 ```
 
+Sin la plataforma a mano:
+
+```bash
+cargo run --release -- --simular
+```
+
+Genera muestras sintéticas con el mismo formato que el firmware. La app lo
+marca como "⚠ Simulado": no sirve como registro clínico.
+
 Para desarrollo:
 
 ```bash

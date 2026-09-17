@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 use serialport::{SerialPort, SerialPortType};
 
+use crate::transporte::Transporte;
+
 pub(crate) const BAUDIOS: u32 = 115_200;
 
 #[derive(Debug, Clone)]
@@ -58,7 +60,8 @@ pub fn puertos_usables() -> Vec<String> {
 pub struct ConexionSerie {
     escritor: Box<dyn SerialPort>,
     detener: Arc<AtomicBool>,
-    pub eventos: Receiver<EventoSerie>,
+    eventos: Receiver<EventoSerie>,
+    puerto: String,
 }
 
 impl ConexionSerie {
@@ -73,11 +76,21 @@ impl ConexionSerie {
 
         thread::spawn(move || hilo_lectura(lector, tx, detener_hilo));
 
-        Ok(Self { escritor, detener, eventos: rx })
+        Ok(Self { escritor, detener, eventos: rx, puerto: puerto.to_string() })
+    }
+}
+
+impl Transporte for ConexionSerie {
+    fn eventos(&self) -> &Receiver<EventoSerie> {
+        &self.eventos
     }
 
-    pub fn enviar_comando(&mut self, c: u8) {
-        let _ = self.escritor.write_all(&[c]);
+    fn enviar_comando(&mut self, comando: u8) {
+        let _ = self.escritor.write_all(&[comando]);
+    }
+
+    fn descripcion(&self) -> String {
+        self.puerto.clone()
     }
 }
 

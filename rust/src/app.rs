@@ -24,6 +24,8 @@ use crate::exportar::exportar_csv;
 use crate::juego;
 use crate::limites;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
+use crate::simulador::Simulador;
+use crate::transporte::Transporte;
 
 /// Única fuente de verdad de la versión: la de `Cargo.toml`. Se muestra en el
 /// título de la ventana y en la barra de estado.
@@ -144,7 +146,7 @@ pub struct PosturografoxApp {
     // Conexión
     puertos: Vec<String>,
     puerto_seleccionado: Option<String>,
-    conexion: Option<ConexionSerie>,
+    conexion: Option<Box<dyn Transporte>>,
     estado: String,
     // Búsqueda automática del puerto al arrancar (ver src/descubrimiento.rs)
     descubrimiento: Option<mpsc::Receiver<EventoDescubrimiento>>,
@@ -273,7 +275,7 @@ impl PosturografoxApp {
             self.reconexion = None;
             match ConexionSerie::conectar(&puerto) {
                 Ok(c) => {
-                    self.conexion = Some(c);
+                    self.conexion = Some(Box::new(c));
                     self.estado = format!("Conectando a {puerto}...");
                 }
                 Err(e) => self.estado = format!("Error al conectar: {e}"),
@@ -281,6 +283,15 @@ impl PosturografoxApp {
         } else {
             self.estado = "Elegí un puerto primero".to_string();
         }
+    }
+
+    /// Conecta el posturógrafo simulado (ver src/simulador.rs). No hay
+    /// reintentos ni descubrimiento: no hay hardware detrás.
+    pub fn conectar_simulador(&mut self) {
+        self.reconexion = None;
+        self.descubrimiento = None;
+        self.conexion = Some(Box::new(Simulador::iniciar()));
+        self.estado = "Simulador conectado".to_string();
     }
 
     /// Programa el reintento automático tras una caída no pedida (el cable se
@@ -304,7 +315,7 @@ impl PosturografoxApp {
         let intentos = pendiente.intentos + 1;
 
         if let Ok(conexion) = ConexionSerie::conectar(&puerto) {
-            self.conexion = Some(conexion);
+            self.conexion = Some(Box::new(conexion));
             self.reconexion = None;
             self.estado = format!("Reconectado a {puerto}");
             return;
@@ -492,7 +503,15 @@ impl PosturografoxApp {
 
             tarjeta(ui, "CONEXIÓN", AZUL, |ui| {
                 if conectado {
-                    ui.colored_label(VERDE, "🟢 Online");
+                    let simulado = self.conexion.as_ref().is_some_and(|c| c.es_simulado());
+                    let descripcion = self.conexion.as_ref().map(|c| c.descripcion()).unwrap_or_default();
+                    if simulado {
+                        // Que nadie confunda una demo con una medición real.
+                        ui.colored_label(AMARILLO, "⚠ Simulado")
+                            .on_hover_text("Datos sintéticos generados por la app: no sirven como registro clínico");
+                    } else {
+                        ui.colored_label(VERDE, "🟢 Online").on_hover_text(descripcion);
+                    }
                     if ui.button("Desconectar").clicked() {
                         self.alternar_conexion();
                     }
@@ -518,6 +537,13 @@ impl PosturografoxApp {
                     {
                         self.estado = "Buscando posturógrafo...".to_string();
                         self.descubrimiento = Some(descubrimiento::iniciar());
+                    }
+                    if ui
+                        .button("Simulador")
+                        .on_hover_text("Datos sintéticos, sin plataforma: para probar la app o el modo juego")
+                        .clicked()
+                    {
+                        self.conectar_simulador();
                     }
                 }
             });
@@ -932,7 +958,7 @@ impl eframe::App for PosturografoxApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let eventos: Vec<EventoSerie> = match &self.conexion {
-            Some(c) => c.eventos.try_iter().collect(),
+            Some(c) => c.eventos().try_iter().collect(),
             None => Vec::new(),
         };
         for evento in eventos {
