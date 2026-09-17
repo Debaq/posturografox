@@ -4,6 +4,7 @@ mod datos;
 mod descubrimiento;
 mod estabilometria;
 mod exportar;
+mod filtro;
 mod juego;
 mod limites;
 mod serial_link;

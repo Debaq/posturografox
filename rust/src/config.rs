@@ -20,6 +20,8 @@ pub mod defecto {
     pub const ESPACIADO_PUNTOS: usize = 8;
     pub const VENTANA_TIEMPO_S: f64 = 20.0;
     pub const MOSTRAR_ELIPSE: bool = true;
+    pub const FILTRAR_COP: bool = true;
+    pub const FILTRO_CORTE_HZ: f64 = 6.0;
     pub const DURACION_PARTIDA_S: f32 = 60.0;
     pub const VOLUMEN_MUSICA: f32 = 0.35;
     pub const VOLUMEN_EFECTOS: f32 = 0.6;
@@ -64,6 +66,12 @@ pub struct Config {
     /// Elipse de confianza 95% sobre el trazo.
     pub mostrar_elipse: bool,
 
+    // ── Procesamiento de la señal ───────────────────────────────────────
+    /// Filtra el COP antes de calcular las métricas de la sesión.
+    pub filtrar_cop: bool,
+    /// Frecuencia de corte del pasabajos (ver `src/filtro.rs`).
+    pub filtro_corte_hz: f64,
+
     // ── Modo juego ──────────────────────────────────────────────────────
     /// Cuánto dura una partida completa; al llegar a 0 sin perder, se gana.
     pub duracion_partida_s: f32,
@@ -83,6 +91,8 @@ impl Default for Config {
             espaciado_puntos: defecto::ESPACIADO_PUNTOS,
             ventana_tiempo_s: defecto::VENTANA_TIEMPO_S,
             mostrar_elipse: defecto::MOSTRAR_ELIPSE,
+            filtrar_cop: defecto::FILTRAR_COP,
+            filtro_corte_hz: defecto::FILTRO_CORTE_HZ,
             duracion_partida_s: defecto::DURACION_PARTIDA_S,
             volumen_musica: defecto::VOLUMEN_MUSICA,
             volumen_efectos: defecto::VOLUMEN_EFECTOS,
@@ -169,6 +179,28 @@ fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
             ui.end_row();
             ui.label("Elipse de confianza 95%");
             ui.checkbox(&mut cfg.mostrar_elipse, "");
+            ui.end_row();
+        });
+
+        seccion(ui, "PROCESAMIENTO DE LA SEÑAL", acento);
+        ui.label(
+            egui::RichText::new(
+                "Sin filtrar, el ruido del ADC agrega zigzag a cada muestra e infla \
+                 la longitud del trazo y la velocidad media.",
+            )
+            .small()
+            .color(Color32::from_gray(120)),
+        );
+        egui::Grid::new("grid_senal").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Filtrar el COP");
+            ui.checkbox(&mut cfg.filtrar_cop, "");
+            ui.end_row();
+            ui.label("Frecuencia de corte")
+                .on_hover_text("Butterworth pasabajos de fase cero. Lo habitual en posturografía: 5 a 10 Hz");
+            ui.add_enabled(
+                cfg.filtrar_cop,
+                egui::DragValue::new(&mut cfg.filtro_corte_hz).range(0.5..=20.0).speed(0.1).suffix(" Hz"),
+            );
             ui.end_row();
         });
 

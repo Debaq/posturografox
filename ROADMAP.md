@@ -67,7 +67,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 3 — Validez clínica
 
-- [ ] **R17 · Filtrado del COP.** Pasabajos Butterworth de fase cero (filtfilt),
+- [x] **R17 · Filtrado del COP.** Pasabajos Butterworth de fase cero (filtfilt),
   corte configurable 5–10 Hz. Sin esto, longitud de trazo y velocidad media
   —las métricas más usadas— quedan infladas por el ruido del HX711.
 - [ ] **R18 · Ensayo de duración fija.** Ventana de registro fija (30 s por

@@ -21,6 +21,7 @@ use crate::estabilometria::{
     Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
 };
 use crate::exportar::exportar_csv;
+use crate::filtro::filtrar_registro;
 use crate::juego;
 use crate::limites;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
@@ -370,7 +371,14 @@ impl PosturografoxApp {
     /// cociente de Romberg), y se queda con una copia del registro crudo
     /// completo para poder exportarlo a CSV.
     fn cerrar_sesion(&mut self) {
-        let metricas = calcular_metricas(&self.sesion_actual);
+        // Las métricas y el CSV salen de la señal filtrada: el zigzag del ruido
+        // del ADC no es balanceo y solo infla longitud y velocidad.
+        let registro = if self.config.filtrar_cop {
+            filtrar_registro(&self.sesion_actual, self.config.filtro_corte_hz)
+        } else {
+            std::mem::take(&mut self.sesion_actual)
+        };
+        let metricas = calcular_metricas(&registro);
         self.ultima_sesion = metricas;
         self.ultima_condicion = self.condicion;
         self.ultima_superficie = self.superficie;
@@ -381,7 +389,7 @@ impl PosturografoxApp {
             }
             self.ctsib_armado = false;
         }
-        self.ultimo_registro = std::mem::take(&mut self.sesion_actual);
+        self.ultimo_registro = registro;
         self.reiniciar_sesion();
         self.ejercicio.detener();
     }
