@@ -100,7 +100,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   recalcular toda la sesión en cada frame.
 - [x] **R27 · Repintado por evento.** No repintar a 30 fps fijos cuando no llega
   ninguna muestra.
-- [ ] **R28 · Audio decodificado una vez.** El loop de música vuelve a decodificar
+- [x] **R28 · Audio decodificado una vez.** El loop de música vuelve a decodificar
   el `.ogg` completo en cada vuelta.
 
 ## Fase 5 — Modo juego

@@ -3,6 +3,7 @@
 //! `EntradaJuego` para lo que llega del posturógrafo real en cada frame.
 
 use egui::{Align2, Color32, ColorImage, Image, Key, Pos2, Rect, RichText, TextureHandle, TextureOptions, Ui, Vec2};
+use rodio::Source;
 
 const ZORRO_BYTES: &[u8] = include_bytes!("../assets/fox.png");
 const ZORRO_COLUMNAS: u32 = 8;
@@ -118,6 +119,10 @@ struct Audio {
     // Volúmenes vigentes, sincronizados cada frame con la configuración.
     volumen_musica: f32,
     volumen_efectos: f32,
+    /// Audio ya decodificado, indexado por la dirección de sus bytes. Decodificar
+    /// un .ogg entero cada vez que hay que repetirlo (o cada vez que suena un
+    /// efecto) es caro y se notaba como tironeo en el juego.
+    decodificados: std::collections::HashMap<usize, rodio::buffer::SamplesBuffer<i16>>,
 }
 
 impl Audio {
@@ -130,7 +135,25 @@ impl Audio {
             pista_actual: None,
             volumen_musica: crate::config::defecto::VOLUMEN_MUSICA,
             volumen_efectos: crate::config::defecto::VOLUMEN_EFECTOS,
+            decodificados: std::collections::HashMap::new(),
         })
+    }
+
+    /// Decodifica una vez y guarda el resultado. `SamplesBuffer` sí es `Clone`,
+    /// así que a partir de acá reproducir o repetir el audio es copiar memoria,
+    /// sin volver a pasar por el decodificador de Vorbis.
+    fn buffer_de(&mut self, bytes: &'static [u8]) -> Option<rodio::buffer::SamplesBuffer<i16>> {
+        let clave = bytes.as_ptr() as usize;
+        if let Some(buffer) = self.decodificados.get(&clave) {
+            return Some(buffer.clone());
+        }
+        let decodificador = rodio::Decoder::new(std::io::Cursor::new(bytes)).ok()?;
+        let canales = decodificador.channels();
+        let tasa = decodificador.sample_rate();
+        let muestras: Vec<i16> = decodificador.collect();
+        let buffer = rodio::buffer::SamplesBuffer::new(canales, tasa, muestras);
+        self.decodificados.insert(clave, buffer.clone());
+        Some(buffer)
     }
 
     /// Toma los volúmenes de la configuración y los aplica también a la
@@ -151,30 +174,19 @@ impl Audio {
         }
     }
 
-    /// Pone a sonar `pista` en loop si no es ya la que está sonando.
+    /// Pone a sonar `pista` en loop si no es ya la que está sonando. El loop
+    /// lo maneja rodio (`repeat_infinite`), así que no hay que estar
+    /// vigilando cada frame si la pista terminó para volver a ponerla.
     fn poner_pista(&mut self, pista: Pista) {
-        let ya_sonando = self.pista_actual == Some(pista) && self.musica.as_ref().is_some_and(|s| !s.empty());
-        if ya_sonando {
+        if self.pista_actual == Some(pista) && self.musica.as_ref().is_some_and(|s| !s.empty()) {
             return;
         }
-        let intento =
-            (rodio::Sink::try_new(&self.salida), rodio::Decoder::new(std::io::Cursor::new(Self::bytes_de(pista))));
-        if let (Ok(sink), Ok(fuente)) = intento {
+        let Some(fuente) = self.buffer_de(Self::bytes_de(pista)) else { return };
+        if let Ok(sink) = rodio::Sink::try_new(&self.salida) {
             sink.set_volume(self.volumen_musica);
-            sink.append(fuente);
+            sink.append(fuente.repeat_infinite());
             self.musica = Some(sink); // dropea el sink anterior, que corta esa pista solo
             self.pista_actual = Some(pista);
-        }
-    }
-
-    /// Como los `Decoder` no son `Clone` no se puede usar `repeat_infinite`;
-    /// en cambio, cada frame se chequea si terminó y se vuelve a poner.
-    fn mantener_loop(&mut self) {
-        if self.musica.as_ref().is_some_and(|s| s.empty())
-            && let Some(pista) = self.pista_actual
-        {
-            self.pista_actual = None; // fuerza a poner_pista a recargarla
-            self.poner_pista(pista);
         }
     }
 
@@ -184,9 +196,9 @@ impl Audio {
     }
 
     /// Sonido suelto (no-loop) que se reproduce solo y se limpia sola.
-    fn reproducir_efecto(&self, bytes: &'static [u8]) {
-        let intento = (rodio::Sink::try_new(&self.salida), rodio::Decoder::new(std::io::Cursor::new(bytes)));
-        if let (Ok(sink), Ok(fuente)) = intento {
+    fn reproducir_efecto(&mut self, bytes: &'static [u8]) {
+        let Some(fuente) = self.buffer_de(bytes) else { return };
+        if let Ok(sink) = rodio::Sink::try_new(&self.salida) {
             sink.set_volume(self.volumen_efectos);
             sink.append(fuente);
             sink.detach();
@@ -566,7 +578,6 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
                 audio.detener_musica(); // se sale al modo clínico, no dejar sonando
             } else {
                 audio.poner_pista(Pista::Menu);
-                audio.mantener_loop();
             }
         }
         dibujar_desconectado(ui, &zorro);
@@ -601,7 +612,6 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
             Fondo::Dia | Fondo::Noche => Pista::Jugando,
         };
         audio.poner_pista(pista);
-        audio.mantener_loop();
     }
 
     actualizar(partida, &entrada);
@@ -765,7 +775,7 @@ fn dibujar_partida(
     fondo_halloween: &SpriteSheet,
     plataforma: &SpriteSheet,
     contador_sprite: &SpriteSheet,
-    audio: Option<&mut Audio>,
+    mut audio: Option<&mut Audio>,
     partida: &mut Partida,
 ) -> bool {
     let rect = ui.available_rect_before_wrap(); // fijo: el HUD nunca tiembla
@@ -827,7 +837,7 @@ fn dibujar_partida(
                 obstaculo.esquivado = true; // esta roca ya no puede golpear de nuevo
                 if partida.vidas.pop().is_some() {
                     partida.pausa = PAUSA_GOLPE_SEGUNDOS;
-                    if let Some(audio) = &audio {
+                    if let Some(audio) = audio.as_deref_mut() {
                         audio.reproducir_efecto(SONIDO_CAIDA);
                     }
                 } else {
@@ -858,7 +868,7 @@ fn dibujar_partida(
             partida.puntaje += r.tipo.puntos();
             partida.vidas.push(r.tipo);
             partida.recompensas.remove(i);
-            if let Some(audio) = &audio {
+            if let Some(audio) = audio.as_deref_mut() {
                 audio.reproducir_efecto(SONIDO_COMER);
             }
             continue;
