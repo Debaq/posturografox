@@ -6,48 +6,70 @@ use egui::{Align2, Color32, ColorImage, Image, Key, Pos2, Rect, RichText, Textur
 use rodio::Source;
 
 const ZORRO_BYTES: &[u8] = include_bytes!("../assets/fox.png");
-const ZORRO_COLUMNAS: u32 = 8;
-const ZORRO_FILAS: u32 = 1;
-
 const GALLINA_BYTES: &[u8] = include_bytes!("../assets/gallina.png");
-const GALLINA_COLUMNAS: u32 = 4;
-const GALLINA_FILAS: u32 = 1;
-
 const CONEJO_BYTES: &[u8] = include_bytes!("../assets/conejo.png");
-const CONEJO_COLUMNAS: u32 = 4;
-const CONEJO_FILAS: u32 = 1;
-
 // No es una animación: cada celda es un diseño de roca distinto, se elige
 // uno al azar por obstáculo (variedad visual sin subir la dificultad).
 // TODO(assets): rocas.png está en muy mala resolución (se nota pixelado
 // incluso achicado). Reemplazar por una versión más nítida antes de sumar
 // más obstáculos/coleccionables nuevos.
 const ROCAS_BYTES: &[u8] = include_bytes!("../assets/rocas.png");
-const ROCAS_COLUMNAS: u32 = 12;
-const ROCAS_FILAS: u32 = 1;
-
 // Íconos de "vida" para el contador del HUD: índice 0 = conejo, 1 = gallina.
 const CONTADOR_BYTES: &[u8] = include_bytes!("../assets/contador.png");
-const CONTADOR_COLUMNAS: u32 = 2;
-const CONTADOR_FILAS: u32 = 1;
-
 // Animación de tropiezo del zorro al chocar con una roca (mientras dura
 // `Partida::pausa`), grilla 2x2.
 const CAIDA_BYTES: &[u8] = include_bytes!("../assets/caida.png");
-const CAIDA_COLUMNAS: u32 = 2;
-const CAIDA_FILAS: u32 = 2;
-
 // Celebración de la pantalla de victoria: zorro + gallina + conejo de la
 // mano, grilla 2x2, se anima en loop mientras dura la pantalla.
 const WINWIN_BYTES: &[u8] = include_bytes!("../assets/winwin.png");
-const WINWIN_COLUMNAS: u32 = 2;
-const WINWIN_FILAS: u32 = 2;
-
 // Fondo de la partida: alterna día/noche cada METROS_POR_CICLO metros
 // recorridos (usa el puntaje, que ya se muestra en "m" en el HUD).
 const FONDO_DIA_BYTES: &[u8] = include_bytes!("../assets/fondodia.png");
 const FONDO_NOCHE_BYTES: &[u8] = include_bytes!("../assets/fondonoche.jpeg");
 const FONDO_HALLOWEEN_BYTES: &[u8] = include_bytes!("../assets/fondohalloween.png");
+// Franja de pasto/tierra por donde corre el zorro, tileable horizontalmente.
+const PLATAFORMA_BYTES: &[u8] = include_bytes!("../assets/plataforma.png");
+
+/// Una hoja de sprites: cómo se llama su textura, de dónde salen sus bytes y
+/// en qué grilla está dividida.
+pub struct HojaDef {
+    pub nombre: &'static str,
+    pub bytes: &'static [u8],
+    columnas: u32,
+    filas: u32,
+}
+
+/// Todas las imágenes del juego, en un solo lugar: lo que dibuja el juego y
+/// lo que precarga el arranque salen de acá, así no pueden divergir.
+pub const HOJAS: [HojaDef; 11] = [
+    HojaDef { nombre: "zorro", bytes: ZORRO_BYTES, columnas: 8, filas: 1 },
+    HojaDef { nombre: "caida", bytes: CAIDA_BYTES, columnas: 2, filas: 2 },
+    HojaDef { nombre: "gallina", bytes: GALLINA_BYTES, columnas: 4, filas: 1 },
+    HojaDef { nombre: "conejo", bytes: CONEJO_BYTES, columnas: 4, filas: 1 },
+    HojaDef { nombre: "rocas", bytes: ROCAS_BYTES, columnas: 12, filas: 1 },
+    HojaDef { nombre: "fondo_dia", bytes: FONDO_DIA_BYTES, columnas: 1, filas: 1 },
+    HojaDef { nombre: "fondo_noche", bytes: FONDO_NOCHE_BYTES, columnas: 1, filas: 1 },
+    HojaDef { nombre: "fondo_halloween", bytes: FONDO_HALLOWEEN_BYTES, columnas: 1, filas: 1 },
+    HojaDef { nombre: "plataforma", bytes: PLATAFORMA_BYTES, columnas: 1, filas: 1 },
+    HojaDef { nombre: "contador", bytes: CONTADOR_BYTES, columnas: 2, filas: 1 },
+    HojaDef { nombre: "winwin", bytes: WINWIN_BYTES, columnas: 2, filas: 2 },
+];
+
+const I_ZORRO: usize = 0;
+const I_CAIDA: usize = 1;
+const I_GALLINA: usize = 2;
+const I_CONEJO: usize = 3;
+const I_ROCAS: usize = 4;
+const I_FONDO_DIA: usize = 5;
+const I_FONDO_NOCHE: usize = 6;
+const I_FONDO_HALLOWEEN: usize = 7;
+const I_PLATAFORMA: usize = 8;
+const I_CONTADOR: usize = 9;
+const I_WINWIN: usize = 10;
+
+/// Cuántas celdas tiene la hoja de rocas (variantes de obstáculo).
+const ROCAS_COLUMNAS: u32 = 12;
+
 const METROS_POR_CICLO: f32 = 600.0;
 // Secuencia que se repite cada 4 tramos de METROS_POR_CICLO:
 // día → noche → día → halloween → día → noche → ...
@@ -59,9 +81,6 @@ enum Fondo {
     Noche,
     Halloween,
 }
-
-// Franja de pasto/tierra por donde corre el zorro, tileable horizontalmente.
-const PLATAFORMA_BYTES: &[u8] = include_bytes!("../assets/plataforma.png");
 
 /// Lo que el posturógrafo le pasa al juego en cada frame.
 pub struct EntradaJuego {
@@ -106,6 +125,15 @@ const SONIDO_CAIDA: &[u8] = include_bytes!("../assets/musica/caida.ogg");
 const SONIDO_VICTORIA: &[u8] = include_bytes!("../assets/musica/victoria.ogg");
 const SONIDO_DERROTA: &[u8] = include_bytes!("../assets/musica/derrota.ogg");
 
+/// Todo el audio del juego, para poder decodificarlo de una vez al arrancar.
+pub const AUDIOS: [&[u8]; 7] =
+    [MUSICA_MENU, MUSICA_JUGANDO, MUSICA_HALLOWEEN, SONIDO_COMER, SONIDO_CAIDA, SONIDO_VICTORIA, SONIDO_DERROTA];
+
+/// Clave con la que se guarda un audio ya decodificado.
+pub fn clave_audio(bytes: &'static [u8]) -> usize {
+    bytes.as_ptr() as usize
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pista {
     Menu,
@@ -143,11 +171,16 @@ impl Audio {
         })
     }
 
+    /// Guarda un audio ya decodificado (viene de la precarga del arranque).
+    fn sembrar(&mut self, clave: usize, buffer: rodio::buffer::SamplesBuffer<i16>) {
+        self.decodificados.insert(clave, buffer);
+    }
+
     /// Decodifica una vez y guarda el resultado. `SamplesBuffer` sí es `Clone`,
     /// así que a partir de acá reproducir o repetir el audio es copiar memoria,
     /// sin volver a pasar por el decodificador de Vorbis.
     fn buffer_de(&mut self, bytes: &'static [u8]) -> Option<rodio::buffer::SamplesBuffer<i16>> {
-        let clave = bytes.as_ptr() as usize;
+        let clave = clave_audio(bytes);
         if let Some(buffer) = self.decodificados.get(&clave) {
             return Some(buffer.clone());
         }
@@ -212,10 +245,21 @@ impl Audio {
 
 /// Carga (o reutiliza) el dispositivo de audio. `None` si ya se intentó y
 /// no hay salida de sonido disponible; en ese caso el juego sigue mudo.
-fn obtener_audio<'a>(cache: &'a mut Option<Audio>, intentado: &mut bool) -> Option<&'a mut Audio> {
+fn obtener_audio<'a>(
+    cache: &'a mut Option<Audio>,
+    intentado: &mut bool,
+    precargado: &mut Vec<(usize, rodio::buffer::SamplesBuffer<i16>)>,
+) -> Option<&'a mut Audio> {
     if !*intentado {
         *cache = Audio::nueva();
         *intentado = true;
+        // Lo que ya decodificó el arranque entra directo al caché: así el
+        // primer sonido no frena el juego para decodificar un .ogg entero.
+        if let Some(audio) = cache.as_mut() {
+            for (clave, buffer) in precargado.drain(..) {
+                audio.sembrar(clave, buffer);
+            }
+        }
     }
     cache.as_mut()
 }
@@ -389,29 +433,36 @@ impl SpriteSheet {
     }
 }
 
-/// Carga (o reutiliza del caché) una hoja de sprites.
+/// Carga (o reutiliza del caché) una hoja de sprites. Si el arranque ya la
+/// decodificó, se usa esa imagen y solo queda subirla a la GPU.
 fn obtener_sprite(
     ui: &Ui,
     cache: &mut Option<SpriteSheet>,
-    nombre: &'static str,
-    bytes: &[u8],
-    columnas: u32,
-    filas: u32,
+    precargadas: &mut std::collections::HashMap<&'static str, ColorImage>,
+    hoja: &HojaDef,
 ) -> SpriteSheet {
-    cache
-        .get_or_insert_with(|| {
-            let imagen = image::load_from_memory(bytes).expect("sprite del juego inválido").into_rgba8();
-            let (ancho, alto) = imagen.dimensions();
-            let color_image = ColorImage::from_rgba_unmultiplied([ancho as usize, alto as usize], imagen.as_raw());
-            let textura = ui.ctx().load_texture(nombre, color_image, TextureOptions::LINEAR);
-            SpriteSheet {
-                textura,
-                columnas,
-                filas,
-                celda_px: Vec2::new(ancho as f32 / columnas as f32, alto as f32 / filas as f32),
-            }
-        })
-        .clone()
+    if let Some(hecho) = cache {
+        return hecho.clone();
+    }
+    let imagen = precargadas.remove(hoja.nombre).unwrap_or_else(|| decodificar(hoja.bytes));
+    let [ancho, alto] = imagen.size;
+    let textura = ui.ctx().load_texture(hoja.nombre, imagen, TextureOptions::LINEAR);
+    let sheet = SpriteSheet {
+        textura,
+        columnas: hoja.columnas,
+        filas: hoja.filas,
+        celda_px: Vec2::new(ancho as f32 / hoja.columnas as f32, alto as f32 / hoja.filas as f32),
+    };
+    *cache = Some(sheet.clone());
+    sheet
+}
+
+/// Pasa los bytes de un PNG/JPEG a la imagen que entiende egui. Es la parte
+/// cara, y por eso el arranque la hace en otro hilo (ver src/precarga.rs).
+pub fn decodificar(bytes: &[u8]) -> ColorImage {
+    let imagen = image::load_from_memory(bytes).expect("sprite del juego inválido").into_rgba8();
+    let (ancho, alto) = imagen.dimensions();
+    ColorImage::from_rgba_unmultiplied([ancho as usize, alto as usize], imagen.as_raw())
 }
 
 /// Generador pseudoaleatorio mínimo (xorshift64), sin depender de `rand`.
@@ -533,19 +584,28 @@ pub struct EstadoJuego {
     partida: Option<Partida>,
     puntaje_maximo: f32,
     puntaje_maximo_cargado: bool,
-    sprite_zorro: Option<SpriteSheet>,
-    sprite_gallina: Option<SpriteSheet>,
-    sprite_conejo: Option<SpriteSheet>,
-    sprite_rocas: Option<SpriteSheet>,
-    sprite_fondo_dia: Option<SpriteSheet>,
-    sprite_fondo_noche: Option<SpriteSheet>,
-    sprite_fondo_halloween: Option<SpriteSheet>,
-    sprite_plataforma: Option<SpriteSheet>,
-    sprite_contador: Option<SpriteSheet>,
-    sprite_caida: Option<SpriteSheet>,
-    sprite_winwin: Option<SpriteSheet>,
+    /// Texturas ya subidas a la GPU, una por entrada de `HOJAS`.
+    hojas: [Option<SpriteSheet>; HOJAS.len()],
+    /// Imágenes ya decodificadas por la precarga del arranque, esperando que
+    /// se suban como textura (subir es barato; decodificar es lo caro).
+    imagenes: std::collections::HashMap<&'static str, ColorImage>,
+    /// Audio ya decodificado por la precarga, para sembrar el caché de `Audio`
+    /// apenas exista el dispositivo de sonido.
+    audio_precargado: Vec<(usize, rodio::buffer::SamplesBuffer<i16>)>,
     audio: Option<Audio>,
     audio_intentado: bool,
+}
+
+impl EstadoJuego {
+    /// Guarda una imagen ya decodificada en el arranque.
+    pub fn recibir_imagen(&mut self, nombre: &'static str, imagen: ColorImage) {
+        self.imagenes.insert(nombre, imagen);
+    }
+
+    /// Guarda un audio ya decodificado en el arranque.
+    pub fn recibir_audio(&mut self, clave: usize, buffer: rodio::buffer::SamplesBuffer<i16>) {
+        self.audio_precargado.push((clave, buffer));
+    }
 }
 
 /// Dibuja el juego a pantalla completa dentro de `ui`.
@@ -557,54 +617,24 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     }
     let salir_tecla = ui.input(|i| i.key_pressed(Key::Escape));
     let sprites = Recursos {
-        zorro: obtener_sprite(ui, &mut estado.sprite_zorro, "zorro_sprite", ZORRO_BYTES, ZORRO_COLUMNAS, ZORRO_FILAS),
-        caida: obtener_sprite(ui, &mut estado.sprite_caida, "caida_sprite", CAIDA_BYTES, CAIDA_COLUMNAS, CAIDA_FILAS),
-        gallina: obtener_sprite(
-            ui,
-            &mut estado.sprite_gallina,
-            "gallina_sprite",
-            GALLINA_BYTES,
-            GALLINA_COLUMNAS,
-            GALLINA_FILAS,
-        ),
-        conejo: obtener_sprite(
-            ui,
-            &mut estado.sprite_conejo,
-            "conejo_sprite",
-            CONEJO_BYTES,
-            CONEJO_COLUMNAS,
-            CONEJO_FILAS,
-        ),
-        rocas: obtener_sprite(ui, &mut estado.sprite_rocas, "rocas_sprite", ROCAS_BYTES, ROCAS_COLUMNAS, ROCAS_FILAS),
-        fondo_dia: obtener_sprite(ui, &mut estado.sprite_fondo_dia, "fondo_dia_sprite", FONDO_DIA_BYTES, 1, 1),
-        fondo_noche: obtener_sprite(ui, &mut estado.sprite_fondo_noche, "fondo_noche_sprite", FONDO_NOCHE_BYTES, 1, 1),
+        zorro: obtener_sprite(ui, &mut estado.hojas[I_ZORRO], &mut estado.imagenes, &HOJAS[I_ZORRO]),
+        caida: obtener_sprite(ui, &mut estado.hojas[I_CAIDA], &mut estado.imagenes, &HOJAS[I_CAIDA]),
+        gallina: obtener_sprite(ui, &mut estado.hojas[I_GALLINA], &mut estado.imagenes, &HOJAS[I_GALLINA]),
+        conejo: obtener_sprite(ui, &mut estado.hojas[I_CONEJO], &mut estado.imagenes, &HOJAS[I_CONEJO]),
+        rocas: obtener_sprite(ui, &mut estado.hojas[I_ROCAS], &mut estado.imagenes, &HOJAS[I_ROCAS]),
+        fondo_dia: obtener_sprite(ui, &mut estado.hojas[I_FONDO_DIA], &mut estado.imagenes, &HOJAS[I_FONDO_DIA]),
+        fondo_noche: obtener_sprite(ui, &mut estado.hojas[I_FONDO_NOCHE], &mut estado.imagenes, &HOJAS[I_FONDO_NOCHE]),
         fondo_halloween: obtener_sprite(
             ui,
-            &mut estado.sprite_fondo_halloween,
-            "fondo_halloween_sprite",
-            FONDO_HALLOWEEN_BYTES,
-            1,
-            1,
+            &mut estado.hojas[I_FONDO_HALLOWEEN],
+            &mut estado.imagenes,
+            &HOJAS[I_FONDO_HALLOWEEN],
         ),
-        plataforma: obtener_sprite(ui, &mut estado.sprite_plataforma, "plataforma_sprite", PLATAFORMA_BYTES, 1, 1),
-        contador: obtener_sprite(
-            ui,
-            &mut estado.sprite_contador,
-            "contador_sprite",
-            CONTADOR_BYTES,
-            CONTADOR_COLUMNAS,
-            CONTADOR_FILAS,
-        ),
-        winwin: obtener_sprite(
-            ui,
-            &mut estado.sprite_winwin,
-            "winwin_sprite",
-            WINWIN_BYTES,
-            WINWIN_COLUMNAS,
-            WINWIN_FILAS,
-        ),
+        plataforma: obtener_sprite(ui, &mut estado.hojas[I_PLATAFORMA], &mut estado.imagenes, &HOJAS[I_PLATAFORMA]),
+        contador: obtener_sprite(ui, &mut estado.hojas[I_CONTADOR], &mut estado.imagenes, &HOJAS[I_CONTADOR]),
+        winwin: obtener_sprite(ui, &mut estado.hojas[I_WINWIN], &mut estado.imagenes, &HOJAS[I_WINWIN]),
     };
-    let mut audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado);
+    let mut audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado, &mut estado.audio_precargado);
     if let Some(audio) = audio.as_deref_mut() {
         audio.ajustar_volumenes(entrada.volumen_musica, entrada.volumen_efectos);
     }

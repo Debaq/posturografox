@@ -11,6 +11,7 @@ mod historial;
 mod informe;
 mod juego;
 mod limites;
+mod precarga;
 mod serial_link;
 mod simulador;
 mod transporte;

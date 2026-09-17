@@ -27,6 +27,7 @@ use crate::historial;
 use crate::informe;
 use crate::juego;
 use crate::limites;
+use crate::precarga::{Precarga, Recurso};
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 use crate::simulador::Simulador;
 use crate::transporte::Transporte;
@@ -34,6 +35,9 @@ use crate::transporte::Transporte;
 /// Única fuente de verdad de la versión: la de `Cargo.toml`. Se muestra en el
 /// título de la ventana y en la barra de estado.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Logo que se muestra en el splash de arranque.
+const LOGO_BYTES: &[u8] = include_bytes!("../../logo.jpeg");
 
 /// Cuánto se espera entre reintentos de reconexión.
 const ESPERA_RECONEXION: Duration = Duration::from_millis(1500);
@@ -452,6 +456,12 @@ pub struct PosturografoxApp {
     /// Ya llegó al menos una lectura desde que se conectó.
     recibio_muestras: bool,
 
+    /// Decodificación de los recursos del modo juego, en segundo plano
+    /// mientras se muestra el splash (ver src/precarga.rs).
+    precarga: Option<Precarga>,
+    /// Logo del splash, subido a la GPU una sola vez.
+    logo: Option<egui::TextureHandle>,
+
     /// Cero de la balanza: lo que marcan las celdas con la plataforma vacía.
     /// Se sigue solo, despacio, para que la deriva térmica del HX711 no se
     /// sume al peso (ver `calibracion::CeroAutomatico`).
@@ -541,6 +551,8 @@ impl Default for PosturografoxApp {
             ultimos_pct: [25.0; 4],
             peso_kg: 0.0,
             recibio_muestras: false,
+            precarga: Some(Precarga::iniciar()),
+            logo: None,
             cero: calibracion::CeroAutomatico::default(),
 
             sesion_actual: Vec::new(),
@@ -840,6 +852,59 @@ impl PosturografoxApp {
         }
         self.ultimo_ml = cop_ml;
         self.ultimo_ap = cop_ap;
+    }
+
+    /// Reparte lo que la precarga fue terminando y, mientras no esté lista,
+    /// dibuja el splash. Devuelve `true` si todavía hay que esperar.
+    fn atender_precarga(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some(precarga) = &mut self.precarga else { return false };
+
+        for recurso in precarga.recoger() {
+            match recurso {
+                Recurso::Imagen(nombre, imagen) => self.estado_juego.recibir_imagen(nombre, imagen),
+                Recurso::Audio(clave, buffer) => self.estado_juego.recibir_audio(clave, buffer),
+            }
+        }
+        let progreso = precarga.progreso();
+        let (listos, total) = (precarga.listos(), precarga.total());
+        if precarga.termino() {
+            self.precarga = None;
+            return false;
+        }
+
+        self.dibujar_splash(ui, progreso, listos, total);
+        ui.ctx().request_repaint(); // la carga avanza en otro hilo
+        true
+    }
+
+    /// Pantalla de arranque: logo, nombre y avance de la carga.
+    fn dibujar_splash(&mut self, ui: &mut egui::Ui, progreso: f32, listos: usize, total: usize) {
+        let logo = self
+            .logo
+            .get_or_insert_with(|| {
+                let imagen = crate::juego::decodificar(LOGO_BYTES);
+                ui.ctx().load_texture("logo_splash", imagen, egui::TextureOptions::LINEAR)
+            })
+            .clone();
+
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().panel_fill)).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                let alto = ui.available_height();
+                ui.add_space(alto * 0.22);
+                let ancho_logo = (ui.available_width() * 0.35).clamp(140.0, 320.0);
+                ui.add(egui::Image::new(&logo).fit_to_exact_size(egui::vec2(ancho_logo, ancho_logo)));
+                ui.add_space(18.0);
+                ui.label(egui::RichText::new("Posturografox").size(28.0).strong().color(AZUL.gamma_multiply(0.9)));
+                ui.label(egui::RichText::new(format!("v{VERSION}")).small().color(Color32::from_gray(140)));
+                ui.add_space(22.0);
+                ui.add(
+                    egui::ProgressBar::new(progreso)
+                        .desired_width((ui.available_width() * 0.4).clamp(220.0, 420.0))
+                        .fill(AZUL.gamma_multiply(0.8))
+                        .text(format!("Preparando recursos {listos}/{total}")),
+                );
+            });
+        });
     }
 
     /// Si se puede subir el paciente, o hay que esperar a que la balanza
@@ -1882,6 +1947,10 @@ impl eframe::App for PosturografoxApp {
         if self.tema_aplicado != Some(self.config.tema) {
             ui.ctx().set_visuals(visuales(self.config.tema));
             self.tema_aplicado = Some(self.config.tema);
+        }
+
+        if self.atender_precarga(ui) {
+            return; // todavía cargando: se muestra el splash y nada más
         }
 
         let eventos: Vec<EventoSerie> = match &self.conexion {
