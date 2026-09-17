@@ -384,8 +384,10 @@ struct Partida {
     puntaje: f32,
     game_over: bool,
     temporizador_reinicio: f32,
-    sonido_fin_reproducido: bool,
-    sonido_victoria_reproducido: bool,
+    /// Cuántas veces sonó ya el jingle de ganar/perder (tope REPETICIONES_SONIDO_FIN).
+    repeticiones_sonido_fin: u8,
+    /// Cuenta regresiva para la próxima repetición de ese jingle.
+    temporizador_sonido_fin: f32,
     /// Gallinas/conejos comidos que hacen de "escudo": cada roca que golpea
     /// consume el último de la pila en vez de terminar la partida.
     vidas: Vec<TipoRecompensa>,
@@ -409,6 +411,11 @@ const REINICIO_SEGUNDOS: f32 = 6.0;
 /// Segundos que se congela el juego al perder una vida contra una roca.
 const PAUSA_GOLPE_SEGUNDOS: f32 = 0.8;
 
+/// El jingle de ganar/perder se repite (no queda sonando solo una vez ni en
+/// loop infinito) hasta este tope, cada INTERVALO_SONIDO_FIN segundos.
+const REPETICIONES_SONIDO_FIN: u8 = 3;
+const INTERVALO_SONIDO_FIN: f32 = 2.0;
+
 impl Partida {
     fn nueva() -> Self {
         Self {
@@ -422,8 +429,8 @@ impl Partida {
             puntaje: 0.0,
             game_over: false,
             temporizador_reinicio: REINICIO_SEGUNDOS,
-            sonido_fin_reproducido: false,
-            sonido_victoria_reproducido: false,
+            repeticiones_sonido_fin: 0,
+            temporizador_sonido_fin: 0.0,
             vidas: Vec::new(),
             pausa: 0.0,
             tiempo_restante: DURACION_PARTIDA_SEGUNDOS,
@@ -527,11 +534,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 
     if partida.game_over {
         if let Some(audio) = audio.as_deref_mut() {
-            if !partida.sonido_fin_reproducido {
-                audio.detener_musica();
-                audio.reproducir_efecto(SONIDO_DERROTA);
-                partida.sonido_fin_reproducido = true;
-            }
+            repetir_sonido_fin(audio, partida, SONIDO_DERROTA, entrada.dt.clamp(0.0, 0.1));
         }
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_game_over(
@@ -557,11 +560,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 
     if partida.gano {
         if let Some(audio) = audio.as_deref_mut() {
-            if !partida.sonido_victoria_reproducido {
-                audio.detener_musica();
-                audio.reproducir_efecto(SONIDO_VICTORIA);
-                partida.sonido_victoria_reproducido = true;
-            }
+            repetir_sonido_fin(audio, partida, SONIDO_VICTORIA, entrada.dt.clamp(0.0, 0.1));
         }
         if partida.puntaje > estado.puntaje_maximo {
             estado.puntaje_maximo = partida.puntaje;
@@ -594,6 +593,24 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     }
 
     salir_tecla || salir_boton
+}
+
+/// Corta la música de fondo (solo la primera vez) y hace sonar `sonido`
+/// hasta REPETICIONES_SONIDO_FIN veces, separadas por INTERVALO_SONIDO_FIN
+/// segundos, mientras dura la pantalla de game over o victoria.
+fn repetir_sonido_fin(audio: &mut Audio, partida: &mut Partida, sonido: &'static [u8], dt: f32) {
+    if partida.repeticiones_sonido_fin == 0 {
+        audio.detener_musica();
+    }
+    if partida.repeticiones_sonido_fin >= REPETICIONES_SONIDO_FIN {
+        return;
+    }
+    partida.temporizador_sonido_fin -= dt;
+    if partida.temporizador_sonido_fin <= 0.0 {
+        audio.reproducir_efecto(sonido);
+        partida.repeticiones_sonido_fin += 1;
+        partida.temporizador_sonido_fin = INTERVALO_SONIDO_FIN;
+    }
 }
 
 fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
