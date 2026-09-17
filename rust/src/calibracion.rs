@@ -220,6 +220,16 @@ impl CeroAutomatico {
         std::array::from_fn(|i| crudos[i] - self.base[i])
     }
 
+    /// `true` si la lectura está quieta y pegada al cero: la plataforma
+    /// terminó de recuperarse de la carga anterior y está lista para la
+    /// medición siguiente.
+    pub fn asentado(&self, tolerancia: f64) -> bool {
+        let Some((_, ultima)) = self.recientes.back() else {
+            return false;
+        };
+        ultima.abs() <= tolerancia && self.estable(tolerancia)
+    }
+
     /// Ajusta el cero con una muestra nueva.
     ///
     /// Solo se mueve si la plataforma está libre **y** la carga neta está
@@ -614,6 +624,24 @@ mod tests {
 
         let residual: f64 = cero.neto(resto).iter().sum();
         assert!(residual.abs() < 8.0, "el resto tendría que haberse ido, quedaron {residual} cuentas");
+    }
+
+    #[test]
+    fn la_plataforma_avisa_cuando_termino_de_volver_a_cero() {
+        // Entre prueba y prueba, el paciente se baja y las celdas quedan con
+        // un resto: hasta que no se va, subirse otra vez arrancaría con el
+        // cero corrido.
+        let mut cero = CeroAutomatico::default();
+        let zona = 500.0;
+        let tolerancia = 50.0;
+        let t = correr_cero(&mut cero, 0.0, 2.0, [0.0; N_CELDAS], zona);
+
+        let resto = [300.0, 0.0, 0.0, 0.0];
+        let t = correr_cero(&mut cero, t, 1.5, resto, zona);
+        assert!(!cero.asentado(tolerancia), "con 0,3 kg de resto todavía no está lista");
+
+        correr_cero(&mut cero, t, 4.0 * TAU_CERO_S, resto, zona);
+        assert!(cero.asentado(tolerancia), "después de asentarse tiene que avisar que ya se puede subir");
     }
 
     #[test]

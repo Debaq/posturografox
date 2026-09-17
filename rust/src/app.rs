@@ -63,6 +63,11 @@ const FRACCION_ZONA_CERO: f64 = 0.05;
 /// gramos de ruido alrededor del cero, no una medición.
 const ZONA_MUERTA_KG: f64 = 0.008;
 
+/// Cuán cerca del cero tiene que estar la plataforma, como fracción del
+/// umbral de presencia, para considerarla lista para la próxima medición.
+/// Con el umbral en 10 kg son 50 g.
+const FRACCION_ASENTADO: f64 = 0.005;
+
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
 
@@ -179,6 +184,21 @@ impl ModoFirmware {
             ModoFirmware::Calibrado => "calibrado",
         }
     }
+}
+
+/// Si la plataforma está en condiciones de recibir al paciente.
+///
+/// Entre prueba y prueba las celdas quedan con un resto de la carga anterior
+/// (creep) que tarda unos segundos en irse. Subirse antes de que se vaya
+/// arranca la medición con el cero corrido, así que conviene avisar cuándo
+/// se puede subir en vez de dejarlo al ojo.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EstadoPlataforma {
+    SinLecturas,
+    Ocupada,
+    /// Todavía volviendo a cero tras la prueba anterior.
+    Asentando,
+    Lista,
 }
 
 /// En qué etapa está el ensayo que se está tomando.
@@ -822,6 +842,25 @@ impl PosturografoxApp {
         self.ultimo_ap = cop_ap;
     }
 
+    /// Si se puede subir el paciente, o hay que esperar a que la balanza
+    /// termine de volver a cero.
+    fn estado_plataforma(&self) -> EstadoPlataforma {
+        if !self.recibio_muestras {
+            EstadoPlataforma::SinLecturas
+        } else if self.ocupado {
+            EstadoPlataforma::Ocupada
+        } else if self.cero.asentado(self.umbral_vigente() * FRACCION_ASENTADO) {
+            EstadoPlataforma::Lista
+        } else {
+            EstadoPlataforma::Asentando
+        }
+    }
+
+    /// Umbral de presencia en la unidad que corresponda (kg o cuentas).
+    fn umbral_vigente(&self) -> f64 {
+        if self.config.calibrado_en_kg { self.config.umbral_kg } else { self.config.umbral }
+    }
+
     /// Cómo va el ensayo en curso, para mostrarlo en pantalla.
     fn progreso_ensayo(&self) -> Option<ProgresoEnsayo> {
         if !self.ocupado {
@@ -946,9 +985,13 @@ impl PosturografoxApp {
                         };
                         ui.label(egui::RichText::new(texto).size(22.0).strong().color(VERDE.gamma_multiply(0.85)));
                     } else if self.conexion.is_some() {
-                        ui.label(
-                            egui::RichText::new("Súbase a la plataforma").size(22.0).color(Color32::from_gray(120)),
-                        );
+                        // Lo que ve el paciente: si la plataforma todavía se
+                        // está asentando, que espere en vez de subirse.
+                        let (texto, color) = match self.estado_plataforma() {
+                            EstadoPlataforma::Asentando => ("Espere un momento...", AMARILLO),
+                            _ => ("Súbase a la plataforma", VERDE),
+                        };
+                        ui.label(egui::RichText::new(texto).size(22.0).strong().color(color.gamma_multiply(0.85)));
                     } else {
                         ui.label(egui::RichText::new("Sin conexión").size(22.0).color(CORAL));
                     }
@@ -1518,7 +1561,32 @@ impl PosturografoxApp {
     /// y cuánto queda de registro. Sin esto, la duración fija sería una regla
     /// invisible que corta la toma cuando menos se espera.
     fn barra_ensayo(&self, ui: &mut egui::Ui) {
-        let Some(progreso) = self.progreso_ensayo() else { return };
+        let Some(progreso) = self.progreso_ensayo() else {
+            // Entre pruebas: avisar cuándo la balanza terminó de volver a cero.
+            match self.estado_plataforma() {
+                EstadoPlataforma::Asentando => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Esperando... la plataforma vuelve a cero")
+                                .small()
+                                .strong()
+                                .color(AMARILLO.gamma_multiply(0.85)),
+                        );
+                    });
+                }
+                EstadoPlataforma::Lista => {
+                    ui.label(
+                        egui::RichText::new("✅ Lista: ya puede subir")
+                            .small()
+                            .strong()
+                            .color(VERDE.gamma_multiply(0.85)),
+                    );
+                }
+                EstadoPlataforma::SinLecturas | EstadoPlataforma::Ocupada => {}
+            }
+            return;
+        };
         let (texto, fraccion, color) = match progreso {
             ProgresoEnsayo::Acomodando(restante) => {
                 (format!("Acomodándose... el registro empieza en {restante:.0} s"), None, AMARILLO)
