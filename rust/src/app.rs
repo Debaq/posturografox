@@ -21,7 +21,7 @@ use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::estabilometria::{
     Acumulador, Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
 };
-use crate::exportar::exportar_csv;
+use crate::exportar::{exportar_csv, exportar_limites};
 use crate::filtro::filtrar_registro;
 use crate::historial;
 use crate::informe;
@@ -1029,12 +1029,37 @@ impl PosturografoxApp {
         tarjeta(ui, "LÍMITES DE ESTABILIDAD", AMARILLO, |ui| {
             if self.ejercicio.activo() {
                 if self.ejercicio.completo() {
-                    if let Some(resumen) = self.ejercicio.resumen() {
-                        ui.label(resumen);
-                    }
-                    if ui.button("Reiniciar").clicked() {
-                        self.ejercicio.iniciar();
-                    }
+                    ui.vertical(|ui| {
+                        if let Some(resumen) = self.ejercicio.resumen() {
+                            ui.label(resumen);
+                        }
+                        // Alcance por dirección: es el resultado clínico del
+                        // ejercicio, y antes se perdía al salir de la pantalla.
+                        egui::Grid::new("grid_limites").num_columns(4).spacing([10.0, 2.0]).show(ui, |ui| {
+                            for (i, intento) in self.ejercicio.intentos.iter().enumerate() {
+                                ui.label(egui::RichText::new(limites::NOMBRES[intento.direccion]).small().strong());
+                                ui.label(egui::RichText::new(format!("{:.1} cm", intento.alcance_cm)).small());
+                                ui.label(
+                                    egui::RichText::new(format!("{:.0}%", intento.fraccion_objetivo * 100.0)).small(),
+                                );
+                                ui.label(egui::RichText::new(format!("{:.1} s", intento.tiempo_s)).small());
+                                if i % 2 == 1 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button("Reiniciar").clicked() {
+                                self.ejercicio.iniciar();
+                            }
+                            if ui.button("Exportar CSV").clicked() {
+                                match exportar_limites(&self.paciente, &self.ejercicio.intentos) {
+                                    Ok(ruta) => self.estado = format!("Límites exportados: {}", ruta.display()),
+                                    Err(e) => self.estado = format!("Error al exportar: {e}"),
+                                }
+                            }
+                        });
+                    });
                 } else {
                     ui.label(format!("Objetivo {}/{}", self.ejercicio.indice_actual() + 1, limites::DIRECCIONES));
                     if ui.button("Detener").clicked() {

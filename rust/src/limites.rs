@@ -19,10 +19,21 @@ pub struct Objetivo {
     pub y: f64,
 }
 
-/// Tiempo que tardó el paciente en alcanzar y sostener cada objetivo.
+/// Cómo le fue al paciente en una dirección: cuánto tardó y hasta dónde
+/// llegó. El alcance es lo que interesa clínicamente (el límite de
+/// estabilidad en esa dirección); el tiempo dice cuánto le costó.
 pub struct Intento {
+    /// Índice de la dirección (0 = adelante, en sentido horario).
+    pub direccion: usize,
     pub tiempo_s: f32,
+    /// Máxima proyección del COP sobre la dirección del objetivo.
+    pub alcance_cm: f64,
+    /// Alcance como fracción de la distancia al objetivo (1.0 = lo tocó).
+    pub fraccion_objetivo: f64,
 }
+
+/// Nombre corto de cada dirección, en el orden en que se recorren.
+pub const NOMBRES: [&str; DIRECCIONES] = ["N", "NE", "E", "SE", "S", "SO", "O", "NO"];
 
 /// Estado del ejercicio en curso. Vive en `PosturografoxApp` y se actualiza
 /// cada frame con la posición COP real (`actualizar`); `app.rs` solo dibuja
@@ -32,12 +43,21 @@ pub struct EjercicioLimites {
     indice: usize,
     tiempo_en_objetivo: f32,
     tiempo_desde_aparicion: f32,
+    /// Máximo alcance logrado hacia el objetivo actual, mientras se intenta.
+    alcance_actual_cm: f64,
     pub intentos: Vec<Intento>,
 }
 
 impl Default for EjercicioLimites {
     fn default() -> Self {
-        Self { activo: false, indice: 0, tiempo_en_objetivo: 0.0, tiempo_desde_aparicion: 0.0, intentos: Vec::new() }
+        Self {
+            activo: false,
+            indice: 0,
+            tiempo_en_objetivo: 0.0,
+            tiempo_desde_aparicion: 0.0,
+            alcance_actual_cm: 0.0,
+            intentos: Vec::new(),
+        }
     }
 }
 
@@ -84,6 +104,16 @@ impl EjercicioLimites {
         self.tiempo_desde_aparicion += dt;
 
         let obj = objetivo_en(self.indice, ancho_cm, prof_cm);
+
+        // Cuánto se inclinó hacia el objetivo: proyección del COP sobre la
+        // dirección del objetivo. Es la medida del límite de estabilidad en
+        // esa dirección, y queda registrada aunque no llegue a tocarlo.
+        let norma_obj = (obj.x * obj.x + obj.y * obj.y).sqrt();
+        if norma_obj > 0.0 {
+            let proyeccion = (cop_ml * obj.x + cop_ap * obj.y) / norma_obj;
+            self.alcance_actual_cm = self.alcance_actual_cm.max(proyeccion);
+        }
+
         let dx = cop_ml - obj.x;
         let dy = cop_ap - obj.y;
         let distancia = (dx * dx + dy * dy).sqrt();
@@ -91,14 +121,34 @@ impl EjercicioLimites {
         if distancia <= tolerancia_cm(ancho_cm, prof_cm) {
             self.tiempo_en_objetivo += dt;
             if self.tiempo_en_objetivo >= TIEMPO_HOLD_S {
-                self.intentos.push(Intento { tiempo_s: self.tiempo_desde_aparicion });
+                self.intentos.push(Intento {
+                    direccion: self.indice,
+                    tiempo_s: self.tiempo_desde_aparicion,
+                    alcance_cm: self.alcance_actual_cm,
+                    fraccion_objetivo: if norma_obj > 0.0 { self.alcance_actual_cm / norma_obj } else { 0.0 },
+                });
                 self.indice += 1;
                 self.tiempo_en_objetivo = 0.0;
                 self.tiempo_desde_aparicion = 0.0;
+                self.alcance_actual_cm = 0.0;
             }
         } else {
             self.tiempo_en_objetivo = 0.0; // hay que sostenerlo sin soltar, no solo "tocarlo"
         }
+    }
+
+    /// Dirección donde menos llegó, para señalar el déficit. `None` si
+    /// todavía no hay intentos registrados.
+    pub fn direccion_mas_debil(&self) -> Option<&Intento> {
+        self.intentos.iter().min_by(|a, b| a.alcance_cm.total_cmp(&b.alcance_cm))
+    }
+
+    /// Alcance medio de todas las direcciones completadas.
+    pub fn alcance_medio_cm(&self) -> f64 {
+        if self.intentos.is_empty() {
+            return 0.0;
+        }
+        self.intentos.iter().map(|i| i.alcance_cm).sum::<f64>() / self.intentos.len() as f64
     }
 
     pub fn resumen(&self) -> Option<String> {
@@ -107,7 +157,16 @@ impl EjercicioLimites {
         }
         let n = self.intentos.len() as f32;
         let promedio = self.intentos.iter().map(|i| i.tiempo_s).sum::<f32>() / n;
-        Some(format!("Completo: {} objetivos · tiempo medio {:.1}s por objetivo", self.intentos.len(), promedio))
+        let debil = self
+            .direccion_mas_debil()
+            .map(|i| format!(" · menor alcance hacia {} ({:.1} cm)", NOMBRES[i.direccion], i.alcance_cm))
+            .unwrap_or_default();
+        Some(format!(
+            "Completo: {} objetivos · tiempo medio {:.1}s · alcance medio {:.1} cm{debil}",
+            self.intentos.len(),
+            promedio,
+            self.alcance_medio_cm()
+        ))
     }
 }
 
@@ -160,6 +219,37 @@ mod tests {
         ej.actualizar(obj.x, obj.y, 40.0, 40.0, 0.4); // 0.4s no alcanza solo
 
         assert_eq!(ej.indice_actual(), 0, "no debería avanzar: se soltó antes de completar el hold");
+    }
+
+    #[test]
+    fn cada_intento_registra_hasta_donde_llego_el_paciente() {
+        let mut ej = EjercicioLimites::default();
+        ej.iniciar();
+        let obj = objetivo_en(0, 40.0, 40.0);
+
+        // Se inclina hasta la mitad del camino, vuelve, y recién después llega.
+        ej.actualizar(0.0, obj.y / 2.0, 40.0, 40.0, 0.1);
+        ej.actualizar(0.0, 0.0, 40.0, 40.0, 0.1);
+        for _ in 0..3 {
+            ej.actualizar(obj.x, obj.y, 40.0, 40.0, 0.2);
+        }
+
+        let intento = &ej.intentos[0];
+        assert_eq!(intento.direccion, 0);
+        assert!((intento.alcance_cm - obj.y).abs() < 1e-6, "alcance {} vs objetivo {}", intento.alcance_cm, obj.y);
+        assert!((intento.fraccion_objetivo - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn la_direccion_mas_debil_es_la_de_menor_alcance() {
+        let mut ej = EjercicioLimites::default();
+        ej.iniciar();
+        ej.intentos.push(Intento { direccion: 0, tiempo_s: 1.0, alcance_cm: 10.0, fraccion_objetivo: 1.0 });
+        ej.intentos.push(Intento { direccion: 3, tiempo_s: 2.0, alcance_cm: 4.0, fraccion_objetivo: 0.4 });
+        ej.intentos.push(Intento { direccion: 5, tiempo_s: 1.5, alcance_cm: 8.0, fraccion_objetivo: 0.8 });
+
+        assert_eq!(ej.direccion_mas_debil().unwrap().direccion, 3);
+        assert!((ej.alcance_medio_cm() - 22.0 / 3.0).abs() < 1e-9);
     }
 
     #[test]

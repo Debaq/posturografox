@@ -78,6 +78,40 @@ pub fn exportar_csv_en(
     Ok(ruta)
 }
 
+/// Exporta los resultados del ejercicio de límites de estabilidad: una fila
+/// por dirección, con cuánto alcanzó y cuánto tardó. Sin esto, el resultado
+/// del ejercicio se perdía al salir de la pantalla.
+pub fn exportar_limites(paciente: &str, intentos: &[crate::limites::Intento]) -> io::Result<PathBuf> {
+    exportar_limites_en(&carpeta_sesiones(), paciente, intentos)
+}
+
+pub fn exportar_limites_en(
+    carpeta: &Path,
+    paciente: &str,
+    intentos: &[crate::limites::Intento],
+) -> io::Result<PathBuf> {
+    fs::create_dir_all(carpeta)?;
+    let epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let ruta = carpeta.join(format!("limites_{}_{}.csv", sanitizar(paciente), epoch));
+
+    let mut archivo = fs::File::create(&ruta)?;
+    writeln!(archivo, "# Posturografox - límites de estabilidad")?;
+    writeln!(archivo, "# paciente: {}", paciente.trim())?;
+    writeln!(archivo, "# epoch_unix_s: {epoch}")?;
+    writeln!(archivo, "direccion,alcance_cm,fraccion_objetivo,tiempo_s")?;
+    for intento in intentos {
+        writeln!(
+            archivo,
+            "{},{:.3},{:.3},{:.2}",
+            crate::limites::NOMBRES[intento.direccion.min(crate::limites::DIRECCIONES - 1)],
+            intento.alcance_cm,
+            intento.fraccion_objetivo,
+            intento.tiempo_s
+        )?;
+    }
+    Ok(ruta)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +163,23 @@ mod tests {
         assert!(contenido.contains("t_s,cop_ml_cm,cop_ap_cm"));
         assert!(contenido.contains("0.5000,0.1000,-0.1000"));
         assert_eq!(contenido.lines().count(), 25, "21 líneas de metadata + encabezado + 3 filas");
+    }
+
+    #[test]
+    fn los_limites_se_exportan_con_una_fila_por_direccion() {
+        use crate::limites::Intento;
+        let carpeta = tempfile::tempdir().expect("crear directorio temporal");
+        let intentos = vec![
+            Intento { direccion: 0, tiempo_s: 1.5, alcance_cm: 12.0, fraccion_objetivo: 0.86 },
+            Intento { direccion: 4, tiempo_s: 2.25, alcance_cm: 7.5, fraccion_objetivo: 0.54 },
+        ];
+
+        let ruta = exportar_limites_en(carpeta.path(), "ID-7", &intentos).expect("exportar límites");
+        let contenido = fs::read_to_string(&ruta).unwrap();
+
+        assert!(contenido.contains("direccion,alcance_cm,fraccion_objetivo,tiempo_s"));
+        assert!(contenido.contains("N,12.000,0.860,1.50"));
+        assert!(contenido.contains("S,7.500,0.540,2.25"));
     }
 
     #[test]
