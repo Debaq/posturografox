@@ -296,6 +296,22 @@ struct Recompensa {
     desfase_animacion: f32,
 }
 
+/// Todos los sprites del juego, ya cargados. Agruparlos evita una función de
+/// dibujo con una docena de parámetros donde es fácil cruzar dos por error.
+struct Recursos {
+    zorro: SpriteSheet,
+    caida: SpriteSheet,
+    gallina: SpriteSheet,
+    conejo: SpriteSheet,
+    rocas: SpriteSheet,
+    fondo_dia: SpriteSheet,
+    fondo_noche: SpriteSheet,
+    fondo_halloween: SpriteSheet,
+    plataforma: SpriteSheet,
+    contador: SpriteSheet,
+    winwin: SpriteSheet,
+}
+
 /// Hoja de sprites genérica (grilla `columnas` x `filas`), con carga
 /// perezosa y dibujado que preserva la relación de aspecto real de cada
 /// celda (una celda no cuadrada no debe "achatar" el personaje).
@@ -540,34 +556,54 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         estado.puntaje_maximo_cargado = true;
     }
     let salir_tecla = ui.input(|i| i.key_pressed(Key::Escape));
-    let zorro = obtener_sprite(ui, &mut estado.sprite_zorro, "zorro_sprite", ZORRO_BYTES, ZORRO_COLUMNAS, ZORRO_FILAS);
-    let gallina = obtener_sprite(
-        ui,
-        &mut estado.sprite_gallina,
-        "gallina_sprite",
-        GALLINA_BYTES,
-        GALLINA_COLUMNAS,
-        GALLINA_FILAS,
-    );
-    let conejo =
-        obtener_sprite(ui, &mut estado.sprite_conejo, "conejo_sprite", CONEJO_BYTES, CONEJO_COLUMNAS, CONEJO_FILAS);
-    let rocas = obtener_sprite(ui, &mut estado.sprite_rocas, "rocas_sprite", ROCAS_BYTES, ROCAS_COLUMNAS, ROCAS_FILAS);
-    let fondo_dia = obtener_sprite(ui, &mut estado.sprite_fondo_dia, "fondo_dia_sprite", FONDO_DIA_BYTES, 1, 1);
-    let fondo_noche = obtener_sprite(ui, &mut estado.sprite_fondo_noche, "fondo_noche_sprite", FONDO_NOCHE_BYTES, 1, 1);
-    let fondo_halloween =
-        obtener_sprite(ui, &mut estado.sprite_fondo_halloween, "fondo_halloween_sprite", FONDO_HALLOWEEN_BYTES, 1, 1);
-    let plataforma = obtener_sprite(ui, &mut estado.sprite_plataforma, "plataforma_sprite", PLATAFORMA_BYTES, 1, 1);
-    let contador = obtener_sprite(
-        ui,
-        &mut estado.sprite_contador,
-        "contador_sprite",
-        CONTADOR_BYTES,
-        CONTADOR_COLUMNAS,
-        CONTADOR_FILAS,
-    );
-    let caida = obtener_sprite(ui, &mut estado.sprite_caida, "caida_sprite", CAIDA_BYTES, CAIDA_COLUMNAS, CAIDA_FILAS);
-    let winwin =
-        obtener_sprite(ui, &mut estado.sprite_winwin, "winwin_sprite", WINWIN_BYTES, WINWIN_COLUMNAS, WINWIN_FILAS);
+    let sprites = Recursos {
+        zorro: obtener_sprite(ui, &mut estado.sprite_zorro, "zorro_sprite", ZORRO_BYTES, ZORRO_COLUMNAS, ZORRO_FILAS),
+        caida: obtener_sprite(ui, &mut estado.sprite_caida, "caida_sprite", CAIDA_BYTES, CAIDA_COLUMNAS, CAIDA_FILAS),
+        gallina: obtener_sprite(
+            ui,
+            &mut estado.sprite_gallina,
+            "gallina_sprite",
+            GALLINA_BYTES,
+            GALLINA_COLUMNAS,
+            GALLINA_FILAS,
+        ),
+        conejo: obtener_sprite(
+            ui,
+            &mut estado.sprite_conejo,
+            "conejo_sprite",
+            CONEJO_BYTES,
+            CONEJO_COLUMNAS,
+            CONEJO_FILAS,
+        ),
+        rocas: obtener_sprite(ui, &mut estado.sprite_rocas, "rocas_sprite", ROCAS_BYTES, ROCAS_COLUMNAS, ROCAS_FILAS),
+        fondo_dia: obtener_sprite(ui, &mut estado.sprite_fondo_dia, "fondo_dia_sprite", FONDO_DIA_BYTES, 1, 1),
+        fondo_noche: obtener_sprite(ui, &mut estado.sprite_fondo_noche, "fondo_noche_sprite", FONDO_NOCHE_BYTES, 1, 1),
+        fondo_halloween: obtener_sprite(
+            ui,
+            &mut estado.sprite_fondo_halloween,
+            "fondo_halloween_sprite",
+            FONDO_HALLOWEEN_BYTES,
+            1,
+            1,
+        ),
+        plataforma: obtener_sprite(ui, &mut estado.sprite_plataforma, "plataforma_sprite", PLATAFORMA_BYTES, 1, 1),
+        contador: obtener_sprite(
+            ui,
+            &mut estado.sprite_contador,
+            "contador_sprite",
+            CONTADOR_BYTES,
+            CONTADOR_COLUMNAS,
+            CONTADOR_FILAS,
+        ),
+        winwin: obtener_sprite(
+            ui,
+            &mut estado.sprite_winwin,
+            "winwin_sprite",
+            WINWIN_BYTES,
+            WINWIN_COLUMNAS,
+            WINWIN_FILAS,
+        ),
+    };
     let mut audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado);
     if let Some(audio) = audio.as_deref_mut() {
         audio.ajustar_volumenes(entrada.volumen_musica, entrada.volumen_efectos);
@@ -587,7 +623,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         } else {
             ("Conectá el posturógrafo para jugar", "En cuanto detecte señal, arranca solo")
         };
-        dibujar_espera(ui, &zorro, motivo.0, motivo.1);
+        dibujar_espera(ui, &sprites.zorro, motivo.0, motivo.1);
         return salir_tecla;
     }
 
@@ -600,7 +636,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_game_over(
             ui,
-            &caida,
+            &sprites.caida,
             partida.puntaje,
             estado.puntaje_maximo,
             partida.temporizador_reinicio.max(0.0),
@@ -627,9 +663,9 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     let escenario = Escenario {
         ancho: area.width(),
         alto: area.height(),
-        aspecto_roca: rocas.aspecto(),
-        aspecto_gallina: gallina.aspecto(),
-        aspecto_conejo: conejo.aspecto(),
+        aspecto_roca: sprites.rocas.aspecto(),
+        aspecto_gallina: sprites.gallina.aspecto(),
+        aspecto_conejo: sprites.conejo.aspecto(),
     };
 
     for sonido in actualizar(partida, &entrada, &escenario) {
@@ -652,7 +688,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_victoria(
             ui,
-            &winwin,
+            &sprites.winwin,
             partida.puntaje,
             estado.puntaje_maximo,
             partida.temporizador_reinicio.max(0.0),
@@ -664,21 +700,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         return salir_tecla || salir_boton;
     }
 
-    let salir_boton = dibujar_partida(
-        ui,
-        &zorro,
-        &caida,
-        &gallina,
-        &conejo,
-        &rocas,
-        &fondo_dia,
-        &fondo_noche,
-        &fondo_halloween,
-        &plataforma,
-        &contador,
-        &escenario,
-        partida,
-    );
+    let salir_boton = dibujar_partida(ui, &sprites, &escenario, partida);
     if partida.game_over && partida.puntaje > estado.puntaje_maximo {
         estado.puntaje_maximo = partida.puntaje;
         guardar_mejor_puntaje(estado.puntaje_maximo);
@@ -915,24 +937,20 @@ fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, sonidos: &m
 /// Dibuja la partida en curso y hace la detección de colisión (que depende
 /// del layout real, por eso vive junto al dibujo y no en `actualizar`).
 /// Devuelve `true` si se apretó "Salir".
-// La lista larga de sprites se agrupa en un struct en R31 del roadmap, junto
-// con la separación entre simulación y dibujo.
-#[allow(clippy::too_many_arguments)]
-fn dibujar_partida(
-    ui: &mut Ui,
-    zorro: &SpriteSheet,
-    caida_sprite: &SpriteSheet,
-    gallina_sprite: &SpriteSheet,
-    conejo_sprite: &SpriteSheet,
-    rocas_sprite: &SpriteSheet,
-    fondo_dia: &SpriteSheet,
-    fondo_noche: &SpriteSheet,
-    fondo_halloween: &SpriteSheet,
-    plataforma: &SpriteSheet,
-    contador_sprite: &SpriteSheet,
-    escenario: &Escenario,
-    partida: &Partida,
-) -> bool {
+fn dibujar_partida(ui: &mut Ui, sprites: &Recursos, escenario: &Escenario, partida: &Partida) -> bool {
+    let Recursos {
+        zorro,
+        caida: caida_sprite,
+        gallina: gallina_sprite,
+        conejo: conejo_sprite,
+        rocas: rocas_sprite,
+        fondo_dia,
+        fondo_noche,
+        fondo_halloween,
+        plataforma,
+        contador: contador_sprite,
+        ..
+    } = sprites;
     let rect = ui.available_rect_before_wrap(); // fijo: el HUD nunca tiembla
     let painter = ui.painter();
 

@@ -110,7 +110,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R30 · Simulación pura y tests.** La colisión vive dentro de la función de
   dibujo, así que la física depende del tamaño de ventana y no se puede
   testear. Separar simulación (coordenadas normalizadas) de dibujo.
-- [ ] **R31 · Recursos agrupados.** `dibujar_partida` recibe 13 argumentos.
+- [x] **R31 · Recursos agrupados.** `dibujar_partida` recibe 13 argumentos.
 
 ## Fase 6 — UX clínica
 
