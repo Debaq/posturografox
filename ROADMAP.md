@@ -9,7 +9,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 0 — Base del repo
 
-- [ ] **R1 · Limpiar el repo.** Borrar la app Python (`app/`, `requirements.txt`),
+- [x] **R1 · Limpiar el repo.** Borrar la app Python (`app/`, `requirements.txt`),
   que quedó duplicada y muerta tras el port a Rust, y reescribir el README
   para documentar la app Rust (build, ejecución, firmware).
 - [ ] **R2 · CI unificado.** `cargo test` + `clippy` + `fmt --check` en cada push
