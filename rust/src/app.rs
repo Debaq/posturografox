@@ -204,6 +204,9 @@ pub struct PosturografoxApp {
     ultimo_ml: f64,
     ultimo_ap: f64,
     ultimos_pct: [f64; 4], // % de carga por celda (fd,fi,bd,bi), para biofeedback en vivo
+    /// Peso medido sobre la plataforma. Solo tiene sentido con calibración en
+    /// kg; sin ella queda en 0 y no se muestra.
+    peso_kg: f64,
 
     // Registro de sesión: sin límite mientras dura (a diferencia de los
     // buffers de arriba, que son ventanas acotadas solo para dibujar).
@@ -269,6 +272,7 @@ impl Default for PosturografoxApp {
             ultimo_ml: 0.0,
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
+            peso_kg: 0.0,
 
             sesion_actual: Vec::new(),
             ultimo_registro: Vec::new(),
@@ -451,6 +455,7 @@ impl PosturografoxApp {
 
     fn procesar_deteccion(&mut self, crudos: [f64; 4]) {
         let (carga, umbral) = self.carga_y_umbral(crudos);
+        self.peso_kg = if self.config.calibrado_en_kg { carga } else { 0.0 };
         if carga.abs() >= umbral {
             self.buffer_arriba.push_back(crudos);
             if self.buffer_arriba.len() > self.config.muestras_tara {
@@ -789,6 +794,28 @@ impl PosturografoxApp {
                         barra(ui, "BI", 3);
                         barra(ui, "BD", 2);
                     });
+
+                    // La plataforma es una balanza: el peso y el reparto entre
+                    // lados son datos clínicos que antes se descartaban.
+                    let derecha = self.ultimos_pct[0] + self.ultimos_pct[2];
+                    let frente = self.ultimos_pct[0] + self.ultimos_pct[1];
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "I/D {:.0}/{:.0}%  ·  Post/Ant {:.0}/{:.0}%",
+                            100.0 - derecha,
+                            derecha,
+                            100.0 - frente,
+                            frente
+                        ))
+                        .small(),
+                    );
+                    if self.config.calibrado_en_kg && self.peso_kg.abs() > 0.5 {
+                        ui.label(
+                            egui::RichText::new(format!("Peso: {:.1} kg", self.peso_kg))
+                                .strong()
+                                .color(NARANJA.gamma_multiply(0.8)),
+                        );
+                    }
                 });
             });
 
@@ -938,6 +965,12 @@ impl PosturografoxApp {
         });
     }
 
+    /// Las métricas que se están mostrando: las de la toma en curso o las de
+    /// la última sesión cerrada.
+    fn metricas_mostradas(&self) -> Option<MetricasBalance> {
+        if self.ocupado && !self.ensayo_cerrado { calcular_metricas(&self.sesion_actual) } else { self.ultima_sesion }
+    }
+
     fn panel_metricas(&self, ui: &mut egui::Ui) {
         let (etiqueta, acento, texto) = if self.ocupado {
             match calcular_metricas(&self.sesion_actual) {
@@ -966,6 +999,9 @@ impl PosturografoxApp {
                     ui.separator();
                     ui.label(texto);
                 });
+                if let Some(m) = self.metricas_mostradas() {
+                    ui.label(egui::RichText::new(m.texto_avanzado()).small().color(Color32::from_gray(110)));
+                }
                 self.barra_ensayo(ui);
                 if let Some(resumen) = self.resumen_ctsib() {
                     ui.horizontal(|ui| {

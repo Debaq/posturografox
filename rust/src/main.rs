@@ -3,6 +3,7 @@ mod calibracion;
 mod config;
 mod datos;
 mod descubrimiento;
+mod espectro;
 mod estabilometria;
 mod exportar;
 mod filtro;

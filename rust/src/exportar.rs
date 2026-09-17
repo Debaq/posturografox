@@ -64,6 +64,12 @@ pub fn exportar_csv_en(
     writeln!(archivo, "# rms_ap_cm: {:.3}", metricas.rms_ap_cm)?;
     writeln!(archivo, "# rango_ml_cm: {:.3}", metricas.rango_ml_cm)?;
     writeln!(archivo, "# rango_ap_cm: {:.3}", metricas.rango_ap_cm)?;
+    writeln!(archivo, "# velocidad_ml_cms: {:.3}", metricas.velocidad_ml_cms)?;
+    writeln!(archivo, "# velocidad_ap_cms: {:.3}", metricas.velocidad_ap_cms)?;
+    writeln!(archivo, "# frec_mediana_ml_hz: {:.3}", metricas.frec_mediana_ml_hz)?;
+    writeln!(archivo, "# frec_mediana_ap_hz: {:.3}", metricas.frec_mediana_ap_hz)?;
+    writeln!(archivo, "# f80_ml_hz: {:.3}", metricas.f80_ml_hz)?;
+    writeln!(archivo, "# f80_ap_hz: {:.3}", metricas.f80_ap_hz)?;
     writeln!(archivo, "t_s,cop_ml_cm,cop_ap_cm")?;
     for m in registro {
         writeln!(archivo, "{:.4},{:.4},{:.4}", m[0], m[1], m[2])?;
@@ -93,6 +99,7 @@ mod tests {
             rms_ap_cm: 0.4,
             rango_ml_cm: 2.0,
             rango_ap_cm: 1.5,
+            ..MetricasBalance::default()
         }
     }
 
@@ -121,7 +128,7 @@ mod tests {
         assert!(contenido.contains("# superficie: Espuma"));
         assert!(contenido.contains("t_s,cop_ml_cm,cop_ap_cm"));
         assert!(contenido.contains("0.5000,0.1000,-0.1000"));
-        assert_eq!(contenido.lines().count(), 19, "15 líneas de metadata + encabezado + 3 filas");
+        assert_eq!(contenido.lines().count(), 25, "21 líneas de metadata + encabezado + 3 filas");
     }
 
     #[test]

@@ -82,7 +82,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R21 · Elipse coherente.** La elipse dibujada se ajusta hoy sobre la
   ventana del trazo y la reportada sobre la sesión completa: unificar para
   que el área95 del panel corresponda al dibujo.
-- [ ] **R22 · Métricas nuevas.** Velocidad media ML y AP por separado (la más
+- [x] **R22 · Métricas nuevas.** Velocidad media ML y AP por separado (la más
   reproducible test-retest), análisis frecuencial (frecuencia mediana y
   F80), **peso corporal** y asimetrías izquierda/derecha y anterior/posterior
   en kg — información que hoy se descarta.

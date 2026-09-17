@@ -69,6 +69,18 @@ pub struct MetricasBalance {
     pub rms_ap_cm: f64,
     pub rango_ml_cm: f64,
     pub rango_ap_cm: f64,
+    /// Velocidad media por eje. Se informan por separado porque un déficit
+    /// suele castigar un eje y no el otro (vestibular tiende a ML,
+    /// propioceptivo a AP), y eso se pierde en la velocidad resultante.
+    pub velocidad_ml_cms: f64,
+    pub velocidad_ap_cms: f64,
+    /// Frecuencia mediana de la oscilación por eje: dos personas con la misma
+    /// área pueden oscilar lento y amplio o rápido y chico.
+    pub frec_mediana_ml_hz: f64,
+    pub frec_mediana_ap_hz: f64,
+    /// F80: por debajo de esta frecuencia está el 80% de la potencia.
+    pub f80_ml_hz: f64,
+    pub f80_ap_hz: f64,
 }
 
 impl MetricasBalance {
@@ -86,6 +98,19 @@ impl MetricasBalance {
             self.rango_ap_cm
         )
     }
+
+    /// Segunda línea con las métricas por eje y las frecuenciales.
+    pub fn texto_avanzado(&self) -> String {
+        format!(
+            "Vel. ML/AP: {:.2}/{:.2} cm/s · Frec. mediana ML/AP: {:.2}/{:.2} Hz · F80 ML/AP: {:.2}/{:.2} Hz",
+            self.velocidad_ml_cms,
+            self.velocidad_ap_cms,
+            self.frec_mediana_ml_hz,
+            self.frec_mediana_ap_hz,
+            self.f80_ml_hz,
+            self.f80_ap_hz
+        )
+    }
 }
 
 /// Calcula todas las métricas a partir de una serie `[t_s, cop_ml_cm, cop_ap_cm]`
@@ -100,10 +125,14 @@ pub fn calcular_metricas(muestras: &[[f64; 3]]) -> Option<MetricasBalance> {
     let ys: Vec<f64> = muestras.iter().map(|m| m[2]).collect();
 
     let mut longitud_cm = 0.0;
+    let mut recorrido_ml_cm = 0.0;
+    let mut recorrido_ap_cm = 0.0;
     for i in 1..n {
         let dx = xs[i] - xs[i - 1];
         let dy = ys[i] - ys[i - 1];
         longitud_cm += (dx * dx + dy * dy).sqrt();
+        recorrido_ml_cm += dx.abs();
+        recorrido_ap_cm += dy.abs();
     }
 
     let media_x = xs.iter().sum::<f64>() / n as f64;
@@ -119,9 +148,23 @@ pub fn calcular_metricas(muestras: &[[f64; 3]]) -> Option<MetricasBalance> {
 
     let area95_cm2 = ajustar_elipse95_xy(&xs, &ys).map_or(0.0, |e| e.area());
     let duracion_s = muestras.last().unwrap()[0] - muestras.first().unwrap()[0];
-    let velocidad_media_cms = if duracion_s > 0.0 { longitud_cm / duracion_s } else { 0.0 };
+    let por_segundo = |recorrido: f64| if duracion_s > 0.0 { recorrido / duracion_s } else { 0.0 };
+    let velocidad_media_cms = por_segundo(longitud_cm);
+
+    // Las frecuenciales necesitan saber a qué ritmo se muestreó; si el
+    // registro no alcanza para estimarlo, quedan en 0 y no se informan.
+    let muestreo_hz = crate::filtro::frecuencia_muestreo(muestras);
+    let frecuencia = |serie: &[f64], fraccion: f64| {
+        muestreo_hz.and_then(|fs| crate::espectro::frecuencia_de_potencia(serie, fs, fraccion)).unwrap_or(0.0)
+    };
 
     Some(MetricasBalance {
+        velocidad_ml_cms: por_segundo(recorrido_ml_cm),
+        velocidad_ap_cms: por_segundo(recorrido_ap_cm),
+        frec_mediana_ml_hz: frecuencia(&xs, 0.5),
+        frec_mediana_ap_hz: frecuencia(&ys, 0.5),
+        f80_ml_hz: frecuencia(&xs, 0.8),
+        f80_ap_hz: frecuencia(&ys, 0.8),
         longitud_cm,
         area95_cm2,
         velocidad_media_cms,
@@ -272,6 +315,29 @@ mod tests {
     #[test]
     fn menos_de_tres_muestras_no_da_metricas() {
         assert!(calcular_metricas(&[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]).is_none());
+    }
+
+    #[test]
+    fn la_velocidad_por_eje_separa_el_movimiento_de_cada_direccion() {
+        // Movimiento puramente medio-lateral: 1 cm por segundo en ML, nada en AP.
+        let muestras: Vec<[f64; 3]> = (0..=10).map(|i| [i as f64, if i % 2 == 0 { 0.0 } else { 1.0 }, 0.0]).collect();
+        let m = calcular_metricas(&muestras).unwrap();
+        assert!((m.velocidad_ml_cms - 1.0).abs() < 1e-9, "dio {}", m.velocidad_ml_cms);
+        assert!(m.velocidad_ap_cms.abs() < 1e-9);
+    }
+
+    #[test]
+    fn el_balanceo_lento_da_frecuencia_mediana_baja() {
+        // 0.5 Hz muestreado a 80 Hz, como un vaivén humano típico.
+        let muestras: Vec<[f64; 3]> = (0..1600)
+            .map(|i| {
+                let t = i as f64 / 80.0;
+                [t, (std::f64::consts::TAU * 0.5 * t).sin(), 0.0]
+            })
+            .collect();
+        let m = calcular_metricas(&muestras).unwrap();
+        assert!((m.frec_mediana_ml_hz - 0.5).abs() < 0.2, "esperaba ~0.5 Hz, dio {}", m.frec_mediana_ml_hz);
+        assert!(m.f80_ml_hz >= m.frec_mediana_ml_hz);
     }
 
     #[test]
