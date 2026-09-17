@@ -30,7 +30,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Posturografox",
+        &format!("Posturografox {}", app::VERSION),
         opciones,
         Box::new(|cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::light());

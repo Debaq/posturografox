@@ -22,6 +22,10 @@ use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::juego;
 use crate::serial_link::{puertos_usables, ConexionSerie, EventoSerie, Muestra};
 
+/// Única fuente de verdad de la versión: la de `Cargo.toml`. Se muestra en el
+/// título de la ventana y en la barra de estado.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
 const VENTANA_TIEMPO_S: f64 = 20.0;
@@ -881,6 +885,11 @@ impl eframe::App for PosturografoxApp {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                 ui.painter().circle_filled(rect.center(), 4.0, color);
                 ui.label(&self.estado);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("v{VERSION}")).small().color(Color32::from_gray(150)),
+                    );
+                });
             });
         });
 

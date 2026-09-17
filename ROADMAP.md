@@ -16,7 +16,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
   y PR; release de binarios Rust (Linux/Windows) en tags `v*.*.*`. Hoy el
   workflow de release sigue siendo el de Python y el de Rust solo corre en
   una rama.
-- [ ] **R3 · Versión única.** El archivo `VERSION` y `Cargo.toml` divergen:
+- [x] **R3 · Versión única.** El archivo `VERSION` y `Cargo.toml` divergen:
   dejar `Cargo.toml` como fuente de verdad y que la app muestre su versión.
 - [ ] **R4 · Licencia, privacidad y herramientas.** `LICENSE`, nota de manejo de
   datos de pacientes, `rustfmt.toml` y `rust-toolchain.toml` para builds
