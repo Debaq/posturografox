@@ -1,0 +1,127 @@
+# Roadmap Posturografox
+
+Plan de trabajo salido de la revisión completa del programa (app Rust,
+firmware ESP32, repo y CI). Cada punto es un commit.
+
+Estado: `[ ]` pendiente · `[x]` hecho
+
+---
+
+## Fase 0 — Base del repo
+
+- [ ] **R1 · Limpiar el repo.** Borrar la app Python (`app/`, `requirements.txt`),
+  que quedó duplicada y muerta tras el port a Rust, y reescribir el README
+  para documentar la app Rust (build, ejecución, firmware).
+- [ ] **R2 · CI unificado.** `cargo test` + `clippy` + `fmt --check` en cada push
+  y PR; release de binarios Rust (Linux/Windows) en tags `v*.*.*`. Hoy el
+  workflow de release sigue siendo el de Python y el de Rust solo corre en
+  una rama.
+- [ ] **R3 · Versión única.** El archivo `VERSION` y `Cargo.toml` divergen:
+  dejar `Cargo.toml` como fuente de verdad y que la app muestre su versión.
+- [ ] **R4 · Licencia, privacidad y herramientas.** `LICENSE`, nota de manejo de
+  datos de pacientes, `rustfmt.toml` y `rust-toolchain.toml` para builds
+  reproducibles.
+- [ ] **R5 · Avisos de clippy.** Los 12 avisos actuales (ifs colapsables, deref
+  redundante, función con 13 argumentos).
+
+## Fase 1 — Configuración y persistencia
+
+- [ ] **R6 · Zona de configuración.** Un único lugar (`config.rs` + panel
+  "Configuración") con *todas* las opciones del programa: geometría de la
+  plataforma, calibración, umbral de detección, trazo, duración del ensayo
+  clínico y **duración de la partida del modo juego**. Hoy están repartidas
+  entre tarjetas de la barra superior y constantes compiladas.
+- [ ] **R7 · Persistencia.** Guardar y restaurar toda la configuración entre
+  sesiones con `eframe::App::save` + `serde`. Hoy cada arranque vuelve a
+  ganancias 1.0 y plataforma 40×40.
+- [ ] **R8 · Exportación fuera del directorio de trabajo.** Escribir en el
+  directorio de datos del usuario (o diálogo de guardado) en vez de
+  `./sesiones`, que falla en Windows o con permisos de solo lectura.
+- [ ] **R9 · Tests de exportación aislados.** Usar directorio temporal para que
+  los tests no escriban dentro del repo.
+
+## Fase 2 — Adquisición robusta
+
+- [ ] **R10 · Parser de línea testeable.** Extraer el parseo del hilo lector a
+  una función pura con tests (encabezado, comentarios, línea truncada,
+  campos de más) y **rechazar NaN/Inf**, que hoy se cuelan y envenenan
+  todas las métricas en silencio.
+- [ ] **R11 · Firmware: secuencia y marca de tiempo.** Agregar número de muestra
+  y `micros()` a cada línea CSV.
+- [ ] **R12 · Host: base de tiempo del dispositivo.** Usar el reloj del firmware
+  en vez de `Instant::now()` del host (que agrupa muestras por el buffering
+  del USB CDC y sesga la velocidad media), y reportar muestras perdidas.
+- [ ] **R13 · Firmware: calibración en NVS.** Guardar tara y calibración por
+  celda en memoria no volátil, con comandos para setearlas desde la app, en
+  vez de `#define` que obligan a recompilar.
+- [ ] **R14 · Firmware: estado consultable y salida no bloqueante.** Comando que
+  informa modo (crudo/calibrado), frecuencia y calibración vigente, y
+  chequeo de `availableForWrite()` para que el host lento no frene el
+  muestreo.
+- [ ] **R15 · Reconexión automática.** Reintentar la conexión cuando el USB se
+  desenchufa y vuelve, sin tener que apretar nada.
+- [ ] **R16 · Capa de transporte y simulador.** Trait `Transporte` (serie /
+  simulado / reproducción de CSV) y modo `--simular` para desarrollar,
+  demostrar y testear sin la plataforma física. Además deja preparada la
+  migración a Bluetooth descrita en `firmware/BLUETOOTH.md`.
+
+## Fase 3 — Validez clínica
+
+- [ ] **R17 · Filtrado del COP.** Pasabajos Butterworth de fase cero (filtfilt),
+  corte configurable 5–10 Hz. Sin esto, longitud de trazo y velocidad media
+  —las métricas más usadas— quedan infladas por el ruido del HX711.
+- [ ] **R18 · Ensayo de duración fija.** Ventana de registro fija (30 s por
+  defecto) con descarte de los primeros segundos de acomodación y cuenta
+  regresiva en pantalla. Hoy la sesión dura lo que la persona esté parada,
+  así que las métricas no son comparables entre ensayos.
+- [ ] **R19 · Calibración a kilogramos.** Rutina guiada con masa conocida por
+  celda, resultado persistente. Sin ella las ganancias son arbitrarias y el
+  COP queda sesgado si las celdas difieren entre sí.
+- [ ] **R20 · Umbral de detección en kg.** Reemplazar el umbral mágico en
+  cuentas crudas (20000) por un umbral en kilogramos una vez calibrado.
+- [ ] **R21 · Elipse coherente.** La elipse dibujada se ajusta hoy sobre la
+  ventana del trazo y la reportada sobre la sesión completa: unificar para
+  que el área95 del panel corresponda al dibujo.
+- [ ] **R22 · Métricas nuevas.** Velocidad media ML y AP por separado (la más
+  reproducible test-retest), análisis frecuencial (frecuencia mediana y
+  F80), **peso corporal** y asimetrías izquierda/derecha y anterior/posterior
+  en kg — información que hoy se descarta.
+- [ ] **R23 · Historial por paciente.** Almacén local de sesiones con listado,
+  comparación y gráfico de evolución, en vez de un CSV suelto por ensayo.
+- [ ] **R24 · Informe imprimible.** Reporte con datos del paciente, trazo,
+  elipse, tabla de métricas y cocientes CTSIB, listo para la ficha clínica.
+
+## Fase 4 — Rendimiento
+
+- [ ] **R25 · Degradé del trazo sin HashMap.** Hoy se reconstruye un mapa de
+  hasta 20.000 entradas por frame, y dos puntos idénticos colisionan y toman
+  el color equivocado.
+- [ ] **R26 · Métricas incrementales.** Acumuladores O(1) por muestra en vez de
+  recalcular toda la sesión en cada frame.
+- [ ] **R27 · Repintado por evento.** No repintar a 30 fps fijos cuando no llega
+  ninguna muestra.
+- [ ] **R28 · Audio decodificado una vez.** El loop de música vuelve a decodificar
+  el `.ogg` completo en cada vuelta.
+
+## Fase 5 — Modo juego
+
+- [ ] **R29 · El juego exige plataforma ocupada.** Hoy arranca con solo estar
+  conectado: el reloj corre y el zorro queda centrado aunque no haya nadie.
+- [ ] **R30 · Simulación pura y tests.** La colisión vive dentro de la función de
+  dibujo, así que la física depende del tamaño de ventana y no se puede
+  testear. Separar simulación (coordenadas normalizadas) de dibujo.
+- [ ] **R31 · Recursos agrupados.** `dibujar_partida` recibe 13 argumentos.
+
+## Fase 6 — UX clínica
+
+- [ ] **R32 · Navegación por secciones.** Las siete tarjetas en una fila se
+  desbordan en ventanas chicas: pestañas Examen / Configuración / Ejercicios
+  / Historial, con los gráficos grandes.
+- [ ] **R33 · Controles en su lugar.** "Espaciado" (cosmético del trazo) está en
+  la tarjeta de detección automática; queda reubicado en Configuración.
+- [ ] **R34 · Modo paciente.** Pantalla completa con solo el COP, sin controles,
+  para que el paciente vea su biofeedback sin distracciones.
+- [ ] **R35 · Tema oscuro y alto contraste.** Hoy la app fuerza tema claro.
+- [ ] **R36 · Límites de estabilidad: resultados.** Guardar distancia alcanzada y
+  déficits por dirección, mostrarlos y exportarlos; hoy solo se mide el
+  tiempo por objetivo y se pierde al salir.
