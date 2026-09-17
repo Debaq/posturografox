@@ -1,5 +1,7 @@
-menu.ogg     — "Home Menu", del pack "Surpass Your Limits!" por Preston Peak (PPEAK)
-jugando.ogg  — "Leaving Home", del mismo pack
+menu.ogg      — "Home Menu", del pack "Surpass Your Limits!" por Preston Peak (PPEAK)
+jugando.ogg   — "Leaving Home", del mismo pack
+halloween.ogg — "Boneyard", del mismo pack (suena en vez de jugando.ogg
+             mientras el fondo es de halloween)
              Fuente: https://opengameart.org/content/free-action-chiptune-music-pack
              Licencia: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
              Reencodeados a Ogg Vorbis (calidad ~q4) para reducir tamaño; sin

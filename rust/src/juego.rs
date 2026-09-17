@@ -21,6 +21,9 @@ const CONEJO_FILAS: u32 = 1;
 
 // No es una animación: cada celda es un diseño de roca distinto, se elige
 // uno al azar por obstáculo (variedad visual sin subir la dificultad).
+// TODO(assets): rocas.png está en muy mala resolución (se nota pixelado
+// incluso achicado). Reemplazar por una versión más nítida antes de sumar
+// más obstáculos/coleccionables nuevos.
 const ROCAS_BYTES: &[u8] = include_bytes!("../assets/rocas.png");
 const ROCAS_COLUMNAS: u32 = 12;
 const ROCAS_FILAS: u32 = 1;
@@ -91,6 +94,7 @@ const MARGEN_PISTA: f32 = 24.0;
 // --- audio (ver assets/musica/CREDITOS.txt por licencias) ---
 const MUSICA_MENU: &[u8] = include_bytes!("../assets/musica/menu.ogg");
 const MUSICA_JUGANDO: &[u8] = include_bytes!("../assets/musica/jugando.ogg");
+const MUSICA_HALLOWEEN: &[u8] = include_bytes!("../assets/musica/halloween.ogg");
 const SONIDO_COMER: &[u8] = include_bytes!("../assets/musica/comer.ogg");
 const SONIDO_CAIDA: &[u8] = include_bytes!("../assets/musica/caida.ogg");
 const SONIDO_VICTORIA: &[u8] = include_bytes!("../assets/musica/victoria.ogg");
@@ -102,6 +106,7 @@ const VOLUMEN_EFECTOS: f32 = 0.6;
 enum Pista {
     Menu,
     Jugando,
+    Halloween,
 }
 
 /// Sale del audio del juego. Si no hay dispositivo de sonido disponible
@@ -123,6 +128,7 @@ impl Audio {
         match pista {
             Pista::Menu => MUSICA_MENU,
             Pista::Jugando => MUSICA_JUGANDO,
+            Pista::Halloween => MUSICA_HALLOWEEN,
         }
     }
 
@@ -179,6 +185,28 @@ fn obtener_audio<'a>(cache: &'a mut Option<Audio>, intentado: &mut bool) -> Opti
         *intentado = true;
     }
     cache.as_mut()
+}
+
+/// Dónde se guarda el mejor puntaje entre sesiones: `~/.local/share/posturografox/`.
+fn ruta_mejor_puntaje() -> Option<std::path::PathBuf> {
+    let mut ruta = std::path::PathBuf::from(std::env::var_os("HOME")?);
+    ruta.push(".local/share/posturografox");
+    Some(ruta)
+}
+
+fn cargar_mejor_puntaje() -> f32 {
+    ruta_mejor_puntaje()
+        .map(|dir| dir.join("mejor_puntaje.txt"))
+        .and_then(|ruta| std::fs::read_to_string(ruta).ok())
+        .and_then(|texto| texto.trim().parse::<f32>().ok())
+        .unwrap_or(0.0)
+}
+
+fn guardar_mejor_puntaje(valor: f32) {
+    let Some(dir) = ruta_mejor_puntaje() else { return };
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(dir.join("mejor_puntaje.txt"), format!("{valor}"));
+    }
 }
 
 /// Un obstáculo cayendo. `x` y `ancho_frac` están normalizados a la pista
@@ -397,7 +425,19 @@ struct Partida {
     /// Cuenta regresiva de la partida completa; en 0 se gana.
     tiempo_restante: f32,
     gano: bool,
+    /// Polvito bajo las patas del zorro mientras corre (solo estético).
+    particulas: Vec<Particula>,
+    temporizador_polvo: f32,
     rng: Rng,
+}
+
+/// Una mota de polvo bajo el zorro. `jitter_x` es su posición lateral fija
+/// (relativa al ancho del zorro), no se mueve por sí sola: la caída y el
+/// desvanecido se calculan a partir de cuánta `vida` le queda.
+struct Particula {
+    jitter_x: f32,
+    vida: f32,
+    vida_total: f32,
 }
 
 /// Cuánto dura una partida completa. Si el reloj llega a 0 sin haber
@@ -435,6 +475,8 @@ impl Partida {
             pausa: 0.0,
             tiempo_restante: DURACION_PARTIDA_SEGUNDOS,
             gano: false,
+            particulas: Vec::new(),
+            temporizador_polvo: 0.0,
             rng: Rng::nueva(),
         }
     }
@@ -446,6 +488,7 @@ impl Partida {
 pub struct EstadoJuego {
     partida: Option<Partida>,
     puntaje_maximo: f32,
+    puntaje_maximo_cargado: bool,
     sprite_zorro: Option<SpriteSheet>,
     sprite_gallina: Option<SpriteSheet>,
     sprite_conejo: Option<SpriteSheet>,
@@ -464,6 +507,10 @@ pub struct EstadoJuego {
 /// Dibuja el juego a pantalla completa dentro de `ui`.
 /// Devuelve `true` si el jugador pidió salir (volver al modo clínico).
 pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> bool {
+    if !estado.puntaje_maximo_cargado {
+        estado.puntaje_maximo = cargar_mejor_puntaje();
+        estado.puntaje_maximo_cargado = true;
+    }
     let salir_tecla = ui.input(|i| i.key_pressed(Key::Escape));
     let zorro = obtener_sprite(ui, &mut estado.sprite_zorro, "zorro_sprite", ZORRO_BYTES, ZORRO_COLUMNAS, ZORRO_FILAS);
     let gallina = obtener_sprite(
@@ -552,7 +599,12 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     }
 
     if let Some(audio) = audio.as_deref_mut() {
-        audio.poner_pista(Pista::Jugando);
+        let tramo = (partida.puntaje / METROS_POR_CICLO) as usize % SECUENCIA_FONDOS.len();
+        let pista = match SECUENCIA_FONDOS[tramo] {
+            Fondo::Halloween => Pista::Halloween,
+            Fondo::Dia | Fondo::Noche => Pista::Jugando,
+        };
+        audio.poner_pista(pista);
         audio.mantener_loop();
     }
 
@@ -564,6 +616,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         }
         if partida.puntaje > estado.puntaje_maximo {
             estado.puntaje_maximo = partida.puntaje;
+            guardar_mejor_puntaje(estado.puntaje_maximo);
         }
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_victoria(
@@ -585,6 +638,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     );
     if partida.game_over && partida.puntaje > estado.puntaje_maximo {
         estado.puntaje_maximo = partida.puntaje;
+        guardar_mejor_puntaje(estado.puntaje_maximo);
     }
     if salir_tecla || salir_boton {
         if let Some(audio) = audio.as_deref_mut() {
@@ -682,6 +736,22 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego) {
         recompensa.y_px += partida.velocidad * dt;
     }
     partida.recompensas.retain(|r| r.y_px < 4000.0);
+
+    // Polvito bajo las patas mientras corre (puramente estético).
+    partida.temporizador_polvo -= dt;
+    if partida.temporizador_polvo <= 0.0 {
+        let vida_total = partida.rng.rango(0.35, 0.5);
+        partida.particulas.push(Particula {
+            jitter_x: partida.rng.rango(-0.6, 0.6),
+            vida: vida_total,
+            vida_total,
+        });
+        partida.temporizador_polvo = partida.rng.rango(0.09, 0.16);
+    }
+    for p in &mut partida.particulas {
+        p.vida -= dt;
+    }
+    partida.particulas.retain(|p| p.vida > 0.0);
 }
 
 /// Dibuja la partida en curso y hace la detección de colisión (que depende
@@ -702,7 +772,21 @@ fn dibujar_partida(
     audio: Option<&mut Audio>,
     partida: &mut Partida,
 ) -> bool {
-    let rect = ui.available_rect_before_wrap();
+    let rect = ui.available_rect_before_wrap(); // fijo: el HUD nunca tiembla
+    let painter = ui.painter();
+
+    // Sacudida de pantalla mientras dura el tropiezo (se apaga sola con
+    // `partida.pausa`). Solo afecta al "mundo" (fondo/pista/personajes),
+    // el HUD sigue quieto.
+    let sacudida_frac = (partida.pausa / PAUSA_GOLPE_SEGUNDOS).clamp(0.0, 1.0);
+    let desplazamiento = if partida.pausa > 0.0 {
+        let transcurrido = PAUSA_GOLPE_SEGUNDOS - partida.pausa;
+        let amplitud = sacudida_frac * 10.0;
+        Vec2::new((transcurrido * 45.0).sin() * amplitud, (transcurrido * 61.0).cos() * amplitud)
+    } else {
+        Vec2::ZERO
+    };
+    let mundo = rect.translate(desplazamiento);
 
     // Ciclo de fondos: día → noche → día → halloween → día → noche → ...
     // (se repite cada 4 tramos de METROS_POR_CICLO metros recorridos, mismo
@@ -714,7 +798,7 @@ fn dibujar_partida(
         Fondo::Noche => fondo_noche,
         Fondo::Halloween => fondo_halloween,
     };
-    fondo_actual.dibujar_cubriendo(ui, rect, 0);
+    fondo_actual.dibujar_cubriendo(ui, mundo, 0);
 
     // Fondos oscuros (noche/halloween) necesitan los números del HUD en
     // blanco para que se lean; de día se mantiene el color oscuro de siempre.
@@ -724,22 +808,20 @@ fn dibujar_partida(
     };
 
     let alto_plataforma = (rect.height() * 0.14).clamp(50.0, 130.0);
-    plataforma.dibujar_tileado(ui, rect, 0, alto_plataforma);
-
-    let painter = ui.painter();
+    plataforma.dibujar_tileado(ui, mundo, 0, alto_plataforma);
 
     let ancho_pista = (rect.width() - 2.0 * MARGEN_PISTA).max(1.0);
-    let x_de_frac = |f: f32| rect.left() + MARGEN_PISTA + f * ancho_pista;
+    let x_de_frac = |f: f32| mundo.left() + MARGEN_PISTA + f * ancho_pista;
 
     let alto_zorro = (rect.width() * 0.14).clamp(60.0, 168.0);
-    let y_zorro = rect.bottom() - alto_zorro * 1.4 + 70.0;
-    let x_zorro = rect.center().x + partida.fox_x * (rect.width() / 2.0 - MARGEN_PISTA - alto_zorro / 2.0);
+    let y_zorro = mundo.bottom() - alto_zorro * 1.4 + 70.0;
+    let x_zorro = mundo.center().x + partida.fox_x * (rect.width() / 2.0 - MARGEN_PISTA - alto_zorro / 2.0);
 
     let mut golpe = false;
     for obstaculo in &mut partida.obstaculos {
         let ancho_px = obstaculo.ancho_frac * ancho_pista;
         let x_centro = x_de_frac(obstaculo.x_frac);
-        let centro = Pos2::new(x_centro, rect.top() + obstaculo.y_px);
+        let centro = Pos2::new(x_centro, mundo.top() + obstaculo.y_px);
         let tamano = rocas_sprite.tamano_para_ancho(ancho_px);
         let roca_rect = Rect::from_center_size(centro, tamano);
         rocas_sprite.dibujar_en(ui, centro, tamano, obstaculo.variante, 0.0);
@@ -776,7 +858,7 @@ fn dibujar_partida(
             TipoRecompensa::Conejo => conejo_sprite,
         };
         let alto = alto_zorro * r.tipo.escala_alto();
-        let centro = Pos2::new(x_de_frac(r.x_frac), rect.top() + r.y_px);
+        let centro = Pos2::new(x_de_frac(r.x_frac), mundo.top() + r.y_px);
         let tamano = sprite.tamano_para_alto(alto);
         let rect_colision = Rect::from_center_size(centro, tamano * 0.6);
 
@@ -793,6 +875,17 @@ fn dibujar_partida(
         let frame = ((partida.tiempo + r.desfase_animacion) * fps_recompensa) as usize;
         sprite.dibujar(ui, centro, alto, frame, 0.0);
         i += 1;
+    }
+
+    // Polvito bajo las patas (dibujado antes que el zorro para que quede detrás).
+    for p in &partida.particulas {
+        let frac_vida = (p.vida / p.vida_total).clamp(0.0, 1.0); // 1.0 recién nacida, 0.0 apagándose
+        let radio = (alto_zorro * 0.09 * frac_vida.sqrt()).max(1.0);
+        let caida_px = (1.0 - frac_vida) * alto_zorro * 0.5;
+        let x = x_zorro + p.jitter_x * alto_zorro * 0.35;
+        let y = y_zorro + alto_zorro * 0.55 + caida_px;
+        let alfa = (frac_vida * 130.0) as u8;
+        painter.circle_filled(Pos2::new(x, y), radio, Color32::from_rgba_unmultiplied(255, 255, 255, alfa));
     }
 
     if partida.pausa > 0.0 {
