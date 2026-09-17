@@ -242,6 +242,110 @@ fn segmentar_trazo(xs: &[f64], ys: &[f64], tramos: usize) -> Vec<Vec<[f64; 2]>> 
     salida
 }
 
+/// Dibuja la plataforma vista desde arriba, con la celda del paso actual
+/// resaltada y una marca en las ya capturadas. Ver dónde va la masa evita
+/// tener que traducir mentalmente "BD" a una esquina.
+fn dibujar_plataforma(ui: &mut egui::Ui, asistente: &Asistente) {
+    const LADO: f32 = 190.0;
+    let (respuesta, painter) = ui.allocate_painter(egui::vec2(LADO, LADO), egui::Sense::hover());
+    let rect = respuesta.rect;
+    let celda = rect.width() / 2.0;
+    let objetivo = match asistente.paso {
+        calibracion::Paso::Celda(i) => Some(i),
+        _ => None,
+    };
+    let capturadas = asistente.capturadas();
+
+    // Orden en pantalla: frontal arriba, derecha a la derecha.
+    // índices: 0=FD, 1=FI, 2=BD, 3=BI
+    for (indice, (fila, columna)) in [(0, 1), (0, 0), (1, 1), (1, 0)].into_iter().enumerate() {
+        let esquina = egui::pos2(rect.left() + columna as f32 * celda, rect.top() + fila as f32 * celda);
+        let caja = egui::Rect::from_min_size(esquina, egui::vec2(celda, celda)).shrink(3.0);
+        let es_objetivo = objetivo == Some(indice);
+        let fondo = if es_objetivo {
+            AMARILLO.gamma_multiply(0.35)
+        } else if capturadas[indice] {
+            VERDE.gamma_multiply(0.2)
+        } else {
+            ui.visuals().faint_bg_color
+        };
+        let borde = if es_objetivo { AMARILLO } else { Color32::from_gray(150) };
+        painter.rect_filled(caja, 6.0, fondo);
+        painter.rect_stroke(
+            caja,
+            6.0,
+            egui::Stroke::new(if es_objetivo { 2.5 } else { 1.0 }, borde),
+            egui::StrokeKind::Inside,
+        );
+
+        let marca = if capturadas[indice] { "✓ " } else { "" };
+        painter.text(
+            caja.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("{marca}{}", calibracion::ETIQUETAS_CORTAS[indice]),
+            egui::FontId::proportional(17.0),
+            ui.visuals().text_color(),
+        );
+        if es_objetivo {
+            // El patrón, a escala aproximada, sobre la celda que toca.
+            painter.circle_filled(caja.center() + egui::vec2(0.0, 22.0), 13.0, AMARILLO);
+            painter.text(
+                caja.center() + egui::vec2(0.0, 22.0),
+                egui::Align2::CENTER_CENTER,
+                "kg",
+                egui::FontId::proportional(11.0),
+                Color32::BLACK,
+            );
+        }
+    }
+    painter.text(
+        egui::pos2(rect.center().x, rect.top() - 2.0),
+        egui::Align2::CENTER_BOTTOM,
+        "frente",
+        egui::FontId::proportional(11.0),
+        Color32::from_gray(140),
+    );
+}
+
+/// Lecturas en vivo de las 4 celdas: valor crudo y, si ya hay cero, cuánto
+/// subió respecto de él. Es lo que permite ver que la masa está haciendo algo
+/// antes de capturar.
+fn tabla_celdas(ui: &mut egui::Ui, asistente: &Asistente) {
+    let lectura = asistente.lectura();
+    let delta = asistente.delta_en_vivo();
+    ui.label(egui::RichText::new("LECTURA EN VIVO").small().strong().color(Color32::from_gray(130)));
+    egui::Grid::new("grid_celdas_calibracion").num_columns(3).spacing([14.0, 4.0]).show(ui, |ui| {
+        ui.label("");
+        ui.label(egui::RichText::new("cuentas").small());
+        ui.label(egui::RichText::new("vs. cero").small());
+        ui.end_row();
+        for i in 0..calibracion::N_CELDAS {
+            ui.label(egui::RichText::new(calibracion::ETIQUETAS_CORTAS[i]).strong());
+            ui.monospace(format!("{:>10.0}", lectura[i]));
+            match delta {
+                Some(d) => {
+                    let color = if d[i] > 0.0 { VERDE } else { Color32::from_gray(140) };
+                    ui.colored_label(color, egui::RichText::new(format!("{:+.0}", d[i])).monospace());
+                }
+                None => {
+                    ui.label(egui::RichText::new("—").monospace());
+                }
+            }
+            ui.end_row();
+        }
+        if let Some(d) = delta {
+            ui.label(egui::RichText::new("total").strong());
+            ui.label("");
+            let total: f64 = d.iter().sum();
+            ui.colored_label(
+                if total > 0.0 { VERDE } else { Color32::from_gray(140) },
+                egui::RichText::new(format!("{total:+.0}")).monospace().strong(),
+            );
+            ui.end_row();
+        }
+    });
+}
+
 /// Grupos de controles de la barra superior.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pestana {
@@ -637,7 +741,7 @@ impl PosturografoxApp {
     fn procesar_muestra(&mut self, m: Muestra) {
         self.muestras_perdidas += m.perdidas;
         if let Some(asistente) = &mut self.asistente {
-            asistente.alimentar(m.crudos);
+            asistente.alimentar(m.t, m.crudos, self.config.masa_calibracion_kg);
         }
         self.buffer_crudo.push_back(m.crudos);
         if self.buffer_crudo.len() > self.config.muestras_tara {
@@ -1103,78 +1207,162 @@ impl PosturografoxApp {
     /// Asistente de calibración a kilogramos con una masa conocida
     /// (ver src/calibracion.rs).
     fn ventana_calibracion(&mut self, ctx: &egui::Context) {
-        let Some(asistente) = &mut self.asistente else { return };
+        if self.asistente.is_none() {
+            return;
+        }
         let masa = self.config.masa_calibracion_kg;
         let lado = self.config.lado_patron_cm;
+        let conectado = self.conexion.is_some();
         let mut cerrar = false;
         let mut abierta = true;
+        let mut asistente = self.asistente.take().expect("recién se comprobó que está");
 
-        egui::Window::new("⚖ Calibración con masa conocida").open(&mut abierta).default_width(460.0).show(ctx, |ui| {
+        egui::Window::new("⚖ Calibración con masa conocida").open(&mut abierta).default_width(520.0).show(ctx, |ui| {
             ui.label(
                 egui::RichText::new(
                     "El peso total sobre la plataforma es el mismo esté donde esté la masa: con \
-                         una captura por celda queda un sistema de 4 ecuaciones que da la ganancia \
-                         de cada una, incluida la parte de carga que se reparte a las vecinas.",
+                     una captura por celda queda un sistema de 4 ecuaciones que da la ganancia \
+                     de cada una, incluida la parte de carga que se reparte a las vecinas.",
                 )
                 .small()
                 .color(Color32::from_gray(120)),
             );
+
+            if !conectado {
+                ui.add_space(8.0);
+                ui.colored_label(CORAL, "Sin conexión: conecte el posturógrafo para poder capturar.");
+            }
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Paso {} de {} — {}",
+                    asistente.paso.numero(),
+                    calibracion::N_CELDAS + 2,
+                    asistente.paso.instruccion(lado, masa)
+                ))
+                .heading(),
+            );
             ui.add_space(8.0);
 
-            ui.label(egui::RichText::new(asistente.paso.instruccion(lado, masa)).heading());
-            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                dibujar_plataforma(ui, &asistente);
+                ui.add_space(12.0);
+                ui.vertical(|ui| tabla_celdas(ui, &asistente));
+            });
 
-            match asistente.paso {
-                calibracion::Paso::Resultado => {
-                    match asistente.resultado {
-                        Some(ganancias) => {
-                            ui.label("Ganancias resueltas (kg por cuenta):");
-                            for (i, g) in ganancias.iter().enumerate() {
-                                ui.monospace(format!("  {:<28} {g:.8}", calibracion::ETIQUETAS[i]));
-                            }
-                            if let Some(peso) = asistente.peso_verificacion(masa) {
-                                ui.add_space(4.0);
-                                ui.label(format!(
-                                    "Verificación: la última captura pesa {peso:.3} kg (el patrón es {masa:.3} kg)"
-                                ));
-                            }
-                            ui.add_space(8.0);
-                            if ui.button("Guardar calibración").clicked() {
-                                self.config.ganancia = ganancias;
-                                self.config.calibrado_en_kg = true;
-                                self.estado = "Calibración guardada: las lecturas están en kilogramos".to_string();
-                                cerrar = true;
-                            }
+            ui.add_space(10.0);
+
+            if asistente.paso == calibracion::Paso::Resultado {
+                self.panel_resultado_calibracion(ui, &mut asistente, masa, &mut cerrar);
+            } else {
+                ui.horizontal(|ui| {
+                    if let Some((texto, avance)) = asistente.progreso() {
+                        ui.add(egui::ProgressBar::new(avance).desired_width(280.0).text(texto));
+                        if ui.button("Cancelar").clicked() {
+                            asistente.cancelar_captura();
                         }
-                        None => {
-                            ui.colored_label(CORAL, "No se pudo resolver la calibración.");
+                    } else {
+                        if ui
+                            .add_enabled(conectado, egui::Button::new("Capturar"))
+                            .on_hover_text(format!(
+                                "Descarta {:.1} s para que la lectura se asiente y después promedia {:.1} s",
+                                calibracion::ESTABILIZACION_S,
+                                calibracion::MEDICION_S
+                            ))
+                            .clicked()
+                        {
+                            asistente.iniciar_captura();
+                        }
+                        if asistente.paso != calibracion::Paso::Vacia && ui.button("Repetir paso anterior").clicked() {
+                            asistente.repetir_paso();
                         }
                     }
-                    if ui.button("Empezar de nuevo").clicked() {
-                        *asistente = Asistente::default();
-                    }
-                }
-                _ => {
-                    ui.label(format!("Muestras promediadas: {}", asistente.muestras_acumuladas()));
-                    let hay_muestras = asistente.muestras_acumuladas() > 0;
-                    if ui
-                        .add_enabled(hay_muestras, egui::Button::new("Capturar"))
-                        .on_hover_text("Promedia todas las muestras que llegaron desde el paso anterior")
-                        .clicked()
-                    {
-                        asistente.capturar(masa);
-                    }
-                }
+                });
             }
 
             if !asistente.aviso.is_empty() {
                 ui.add_space(6.0);
-                ui.colored_label(CORAL, &asistente.aviso);
+                let color = if asistente.error.is_some() { CORAL } else { Color32::from_gray(110) };
+                ui.colored_label(color, &asistente.aviso);
             }
         });
 
         if cerrar || !abierta {
             self.asistente = None;
+        } else {
+            self.asistente = Some(asistente);
+        }
+    }
+
+    /// Último paso: ganancias resueltas, verificación y guardado; o el error
+    /// con su explicación y las salidas posibles.
+    fn panel_resultado_calibracion(
+        &mut self,
+        ui: &mut egui::Ui,
+        asistente: &mut Asistente,
+        masa: f64,
+        cerrar: &mut bool,
+    ) {
+        match asistente.resultado {
+            Some(ganancias) => {
+                if asistente.es_respaldo {
+                    ui.colored_label(AMARILLO, "Calibración de respaldo: una sola escala para las 4 celdas.");
+                }
+                ui.label("Verificación: cada captura tiene que pesar lo que pesa el patrón.");
+                egui::Grid::new("grid_verificacion").num_columns(3).spacing([14.0, 4.0]).show(ui, |ui| {
+                    let pesos = calibracion::verificacion(asistente.deltas(), &ganancias);
+                    for (i, peso) in pesos.iter().enumerate() {
+                        let error_pct = (peso - masa).abs() / masa * 100.0;
+                        ui.label(egui::RichText::new(calibracion::ETIQUETAS_CORTAS[i]).strong());
+                        ui.label(format!("{peso:.3} kg"));
+                        let color = if error_pct < 2.0 { VERDE } else { CORAL };
+                        ui.colored_label(color, format!("{error_pct:+.1} %"));
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(6.0);
+                ui.collapsing("Ganancias resueltas", |ui| {
+                    for (i, g) in ganancias.iter().enumerate() {
+                        ui.monospace(format!("{:<26} {g:.8} kg/cuenta", calibracion::ETIQUETAS[i]));
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Guardar calibración").clicked() {
+                        self.config.ganancia = ganancias;
+                        self.config.calibrado_en_kg = true;
+                        self.estado = "Calibración guardada: las lecturas están en kilogramos".to_string();
+                        *cerrar = true;
+                    }
+                    if ui.button("Repetir último paso").clicked() {
+                        asistente.repetir_paso();
+                    }
+                    if ui.button("Empezar de nuevo").clicked() {
+                        *asistente = Asistente::default();
+                    }
+                });
+            }
+            None => {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("Usar escala global")
+                        .on_hover_text(
+                            "Una sola escala para las 4 celdas: deja el peso bien medido, pero no corrige \
+                             las diferencias entre celdas",
+                        )
+                        .clicked()
+                    {
+                        asistente.usar_escala_global(masa);
+                    }
+                    if ui.button("Repetir último paso").clicked() {
+                        asistente.repetir_paso();
+                    }
+                    if ui.button("Empezar de nuevo").clicked() {
+                        *asistente = Asistente::default();
+                    }
+                });
+            }
         }
     }
 
