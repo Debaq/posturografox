@@ -105,7 +105,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 
 ## Fase 5 — Modo juego
 
-- [ ] **R29 · El juego exige plataforma ocupada.** Hoy arranca con solo estar
+- [x] **R29 · El juego exige plataforma ocupada.** Hoy arranca con solo estar
   conectado: el reloj corre y el zorro queda centrado aunque no haya nadie.
 - [ ] **R30 · Simulación pura y tests.** La colisión vive dentro de la función de
   dibujo, así que la física depende del tamaño de ventana y no se puede

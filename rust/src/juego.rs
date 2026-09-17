@@ -73,6 +73,10 @@ pub struct EntradaJuego {
     #[allow(dead_code)]
     pub prof_cm: f64,
     pub conectado: bool,
+    /// Hay alguien parado sobre la plataforma. Sin esto el juego arrancaba con
+    /// solo estar conectado: el reloj corría y el zorro quedaba clavado en el
+    /// centro porque el COP de una plataforma vacía es (0, 0).
+    pub en_plataforma: bool,
     pub dt: f32,
     // Opciones del juego, definidas en la zona de configuración (src/config.rs).
     pub duracion_partida_s: f32,
@@ -571,7 +575,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         audio.ajustar_volumenes(entrada.volumen_musica, entrada.volumen_efectos);
     }
 
-    if !entrada.conectado {
+    if !entrada.conectado || !entrada.en_plataforma {
         estado.partida = None; // evita que arranque con velocidad "gratis" mientras no hay lecturas
         if let Some(audio) = audio.as_deref_mut() {
             if salir_tecla {
@@ -580,7 +584,12 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
                 audio.poner_pista(Pista::Menu);
             }
         }
-        dibujar_desconectado(ui, &zorro);
+        let motivo = if entrada.conectado {
+            ("Subite a la plataforma para jugar", "El zorro se mueve con tu peso")
+        } else {
+            ("Conectá el posturógrafo para jugar", "En cuanto detecte señal, arranca solo")
+        };
+        dibujar_espera(ui, &zorro, motivo.0, motivo.1);
         return salir_tecla;
     }
 
@@ -981,7 +990,7 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 /// Usa todo el `rect` disponible (mismo criterio que `dibujar_partida` y
 /// `dibujar_game_over`) en vez de apilar todo al medio de la ventana.
-fn dibujar_desconectado(ui: &mut Ui, sprite: &SpriteSheet) {
+fn dibujar_espera(ui: &mut Ui, sprite: &SpriteSheet, titulo: &str, detalle: &str) {
     let rect = ui.available_rect_before_wrap();
     let painter = ui.painter();
     let cx = rect.center().x;
@@ -1012,13 +1021,8 @@ fn dibujar_desconectado(ui: &mut Ui, sprite: &SpriteSheet) {
     let alto_zorro = (alto * 0.32).clamp(140.0, 360.0);
     sprite.dibujar(ui, Pos2::new(cx, rect.top() + alto * 0.38), alto_zorro, 0, 0.0);
 
-    texto_centrado("Conectá el posturógrafo para jugar", 0.63, (alto * 0.042).clamp(20.0, 34.0), TEXTO);
-    texto_centrado(
-        "En cuanto detecte señal, arranca solo",
-        0.70,
-        (alto * 0.022).clamp(13.0, 17.0),
-        TEXTO.gamma_multiply(0.65),
-    );
+    texto_centrado(titulo, 0.63, (alto * 0.042).clamp(20.0, 34.0), TEXTO);
+    texto_centrado(detalle, 0.70, (alto * 0.022).clamp(13.0, 17.0), TEXTO.gamma_multiply(0.65));
     texto_centrado(
         "ESC para volver al modo clínico",
         0.90,

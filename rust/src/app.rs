@@ -1440,6 +1440,7 @@ impl eframe::App for PosturografoxApp {
                 ancho_cm: self.config.ancho_cm,
                 prof_cm: self.config.prof_cm,
                 conectado: self.conexion.is_some(),
+                en_plataforma: self.ocupado,
                 dt: ui.input(|i| i.stable_dt),
                 duracion_partida_s: self.config.duracion_partida_s,
                 volumen_musica: self.config.volumen_musica,
