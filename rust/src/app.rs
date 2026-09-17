@@ -416,9 +416,17 @@ pub struct PosturografoxApp {
     ultimo_ml: f64,
     ultimo_ap: f64,
     ultimos_pct: [f64; 4], // % de carga por celda (fd,fi,bd,bi), para biofeedback en vivo
-    /// Peso medido sobre la plataforma. Solo tiene sentido con calibración en
-    /// kg; sin ella queda en 0 y no se muestra.
+    /// Peso medido sobre la plataforma, en kg (0 si todavía no hay
+    /// calibración con masa conocida).
     peso_kg: f64,
+    /// Carga que marcan las celdas con la plataforma vacía. Se actualiza sola
+    /// mientras nadie está arriba: restarla evita que la deriva del cero del
+    /// HX711 (temperatura, tiempo desde la tara) se sume al peso.
+    linea_base: [f64; 4],
+    /// La línea de base ya se sembró con una lectura real. Sin esto, un
+    /// firmware que entrega cuentas crudas con offset grande haría creer que
+    /// hay alguien arriba apenas se conecta, y el cero nunca se ajustaría.
+    linea_base_lista: bool,
 
     // Registro de sesión: sin límite mientras dura (a diferencia de los
     // buffers de arriba, que son ventanas acotadas solo para dibujar).
@@ -503,6 +511,8 @@ impl Default for PosturografoxApp {
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
             peso_kg: 0.0,
+            linea_base: [0.0; 4],
+            linea_base_lista: false,
 
             sesion_actual: Vec::new(),
             acumulador: Acumulador::nuevo(),
@@ -615,6 +625,12 @@ impl PosturografoxApp {
             }
         }
         self.offset = suma.map(|s| s / n);
+        if !usar_muestras_de_carga {
+            // Tara pedida a mano: la plataforma está vacía, así que esta
+            // lectura es también el cero de la balanza.
+            self.linea_base = self.offset;
+            self.linea_base_lista = true;
+        }
         self.estado = "Tara por software aplicada".to_string();
     }
 
@@ -693,16 +709,32 @@ impl PosturografoxApp {
     /// unidad: kilogramos si hay calibración con masa conocida, y cuentas
     /// crudas del ADC mientras no la haya.
     fn carga_y_umbral(&self, crudos: [f64; 4]) -> (f64, f64) {
+        let neto: [f64; 4] = std::array::from_fn(|i| crudos[i] - self.linea_base[i]);
         if self.config.calibrado_en_kg {
-            (calibracion::peso_kg(&crudos, &self.config.ganancia), self.config.umbral_kg)
+            (calibracion::peso_kg(&neto, &self.config.ganancia), self.config.umbral_kg)
         } else {
-            (crudos.iter().sum(), self.config.umbral)
+            (neto.iter().sum(), self.config.umbral)
         }
     }
 
     fn procesar_deteccion(&mut self, crudos: [f64; 4]) {
+        if !self.linea_base_lista {
+            // Primera muestra de la conexión: se asume la plataforma vacía,
+            // igual que hace la tara del firmware al encender.
+            self.linea_base = crudos;
+            self.linea_base_lista = true;
+        }
         let (carga, umbral) = self.carga_y_umbral(crudos);
         self.peso_kg = if self.config.calibrado_en_kg { carga } else { 0.0 };
+
+        // Con la plataforma libre, la lectura actual *es* el cero: se sigue
+        // despacio para no arrastrar el ruido de una sola muestra.
+        if !self.ocupado && carga.abs() < umbral {
+            const SEGUIMIENTO: f64 = 0.01;
+            for (base, valor) in self.linea_base.iter_mut().zip(crudos.iter()) {
+                *base += (valor - *base) * SEGUIMIENTO;
+            }
+        }
         if carga.abs() >= umbral {
             self.buffer_arriba.push_back(crudos);
             if self.buffer_arriba.len() > self.config.muestras_tara {
@@ -820,6 +852,7 @@ impl PosturografoxApp {
             EventoSerie::Conectado => {
                 self.estado = "Conectado".to_string();
                 self.muestras_perdidas = 0;
+                self.linea_base_lista = false; // se siembra con la primera muestra
                 // Preguntar el estado del firmware: modo, calibración y tara.
                 if let Some(c) = &mut self.conexion {
                     c.enviar_comando(b'p');
@@ -924,6 +957,14 @@ impl PosturografoxApp {
                             self.modo_paciente = false;
                         }
                         ui.label(egui::RichText::new("ESC para volver").small().color(Color32::from_gray(150)));
+                        if self.config.calibrado_en_kg && self.ocupado {
+                            ui.label(
+                                egui::RichText::new(format!("{:.1} kg", self.peso_kg))
+                                    .size(22.0)
+                                    .strong()
+                                    .color(NARANJA.gamma_multiply(0.85)),
+                            );
+                        }
                     });
                 });
                 let alto = ui.available_height();
@@ -983,6 +1024,37 @@ impl PosturografoxApp {
                 }
             });
         });
+        tarjeta(ui, "PESO", NARANJA, |ui| {
+            ui.vertical(|ui| {
+                if self.config.calibrado_en_kg {
+                    let texto = if self.ocupado || self.peso_kg.abs() > 1.0 {
+                        format!("{:.1} kg", self.peso_kg)
+                    } else {
+                        "— kg".to_string()
+                    };
+                    ui.label(egui::RichText::new(texto).size(34.0).strong().color(NARANJA.gamma_multiply(0.85)));
+                    ui.label(
+                        egui::RichText::new(if self.ocupado { "sobre la plataforma" } else { "plataforma libre" })
+                            .small()
+                            .color(Color32::from_gray(130)),
+                    );
+                } else {
+                    // Sin calibrar no hay kilos posibles: las celdas entregan
+                    // cuentas del ADC. Antes esto no se decía en ninguna parte
+                    // y el peso simplemente no aparecía.
+                    ui.label(egui::RichText::new("— kg").size(34.0).color(Color32::from_gray(150)));
+                    ui.label(egui::RichText::new("sin calibrar").small().color(CORAL));
+                    if ui
+                        .button("⚖ Calibrar")
+                        .on_hover_text("Con una masa conocida, la plataforma pasa a medir en kilogramos")
+                        .clicked()
+                    {
+                        self.asistente = Some(Asistente::default());
+                    }
+                }
+            });
+        });
+
         tarjeta(ui, "PESO POR CELDA", NARANJA, |ui| {
             let barra = |ui: &mut egui::Ui, etq: &str, idx: usize| {
                 ui.label(etq);
@@ -1014,13 +1086,6 @@ impl PosturografoxApp {
                     ))
                     .small(),
                 );
-                if self.config.calibrado_en_kg && self.peso_kg.abs() > 0.5 {
-                    ui.label(
-                        egui::RichText::new(format!("Peso: {:.1} kg", self.peso_kg))
-                            .strong()
-                            .color(NARANJA.gamma_multiply(0.8)),
-                    );
-                }
             });
         });
     }
