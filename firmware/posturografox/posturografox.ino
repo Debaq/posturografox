@@ -30,9 +30,17 @@
     s  -> resincroniza los 4 HX711
     f  -> muestra la frecuencia de muestreo medida
     i  -> imprime el saludo de identificación (para autodetección del puerto)
+    p  -> imprime la calibración y la tara vigentes
+    K<i>:<cuentas_por_kg>\n  -> fija la calibración de la celda i (0..3) y la
+                               guarda en memoria no volátil. Ej: "K0:412.75"
+    Kr\n -> vuelve a la calibración de fábrica (todas en 1.0)
+
+  Calibración y tara se guardan en NVS (Preferences) y se recuperan al
+  encender: calibrar ya no obliga a recompilar el firmware.
 */
 
 #include <Arduino.h>
+#include <Preferences.h>
 
 // =================== PINES (ESP32-C3 Super Mini) ===================
 // Pines libres y seguros en esta placa: 0, 1, 3, 4, 5, 6, 7, 10, 20, 21
@@ -94,9 +102,14 @@
 #endif
 #define TIMEOUT_MS (PERIODO_MS * 5 + 50)
 
-const uint8_t PIN_DOUT[N_SENS] = { PIN_DOUT_FD, PIN_DOUT_FI, PIN_DOUT_BD, PIN_DOUT_BI };
-const char*   ETQ[N_SENS]      = { ETQ_FD, ETQ_FI, ETQ_BD, ETQ_BI };
-const float   CAL[N_SENS]      = { CAL_FD, CAL_FI, CAL_BD, CAL_BI };
+const uint8_t PIN_DOUT[N_SENS]  = { PIN_DOUT_FD, PIN_DOUT_FI, PIN_DOUT_BD, PIN_DOUT_BI };
+const char*   ETQ[N_SENS]       = { ETQ_FD, ETQ_FI, ETQ_BD, ETQ_BI };
+const float   CAL_FABRICA[N_SENS] = { CAL_FD, CAL_FI, CAL_BD, CAL_BI };
+
+// Calibración vigente: arranca en la de fábrica y la pisa lo que haya en NVS.
+float CAL[N_SENS] = { CAL_FD, CAL_FI, CAL_BD, CAL_BI };
+
+Preferences memoria;               // namespace "postfox" en NVS
 
 long offsetTara[N_SENS] = { 0, 0, 0, 0 };
 bool modoCrudo = IMPRIMIR_CRUDO;
@@ -200,6 +213,80 @@ void tarar() {
                 offsetTara[0], offsetTara[1], offsetTara[2], offsetTara[3]);
 }
 
+// =================== MEMORIA NO VOLÁTIL (NVS) ===================
+// Claves cortas: NVS admite hasta 15 caracteres por clave.
+void guardarCalibracion() {
+  memoria.begin("postfox", false);
+  for (int i = 0; i < N_SENS; i++) {
+    char clave[8];
+    snprintf(clave, sizeof(clave), "cal%d", i);
+    memoria.putFloat(clave, CAL[i]);
+  }
+  memoria.end();
+}
+
+void guardarTara() {
+  memoria.begin("postfox", false);
+  for (int i = 0; i < N_SENS; i++) {
+    char clave[8];
+    snprintf(clave, sizeof(clave), "off%d", i);
+    memoria.putLong(clave, offsetTara[i]);
+  }
+  memoria.end();
+}
+
+// Recupera lo guardado. Si no hay nada (primer arranque, NVS borrada), deja
+// los valores de fábrica: nunca falla ni bloquea el arranque.
+void cargarDesdeMemoria() {
+  memoria.begin("postfox", true);   // solo lectura
+  for (int i = 0; i < N_SENS; i++) {
+    char clave[8];
+    snprintf(clave, sizeof(clave), "cal%d", i);
+    float valor = memoria.getFloat(clave, CAL_FABRICA[i]);
+    // Una calibración en 0 dividiría por cero y mandaría inf al host.
+    CAL[i] = (isfinite(valor) && valor != 0.0f) ? valor : CAL_FABRICA[i];
+
+    snprintf(clave, sizeof(clave), "off%d", i);
+    offsetTara[i] = memoria.getLong(clave, 0);
+  }
+  memoria.end();
+}
+
+// Estado completo, para que el host sepa con qué escala está mirando los
+// datos sin tener que adivinarlo.
+void imprimirEstado() {
+  Serial.printf("# Modo: %s\n", modoCrudo ? "crudo" : "calibrado");
+  Serial.printf("# Calibracion (cuentas por unidad): %.4f,%.4f,%.4f,%.4f\n",
+                CAL[0], CAL[1], CAL[2], CAL[3]);
+  Serial.printf("# Tara: %ld,%ld,%ld,%ld\n",
+                offsetTara[0], offsetTara[1], offsetTara[2], offsetTara[3]);
+}
+
+// Procesa "K<i>:<valor>" (fija una celda) o "Kr" (vuelve a fábrica).
+void aplicarComandoCalibracion(const char* resto) {
+  if (resto[0] == 'r' || resto[0] == 'R') {
+    for (int i = 0; i < N_SENS; i++) CAL[i] = CAL_FABRICA[i];
+    guardarCalibracion();
+    Serial.println("# Calibracion restaurada a fabrica");
+    imprimirEstado();
+    return;
+  }
+
+  int indice = -1;
+  float valor = 0.0f;
+  if (sscanf(resto, "%d:%f", &indice, &valor) != 2) {
+    Serial.println("# Comando invalido, se esperaba K<i>:<valor>");
+    return;
+  }
+  if (indice < 0 || indice >= N_SENS || !isfinite(valor) || valor == 0.0f) {
+    Serial.println("# Calibracion fuera de rango (celda 0..3, valor distinto de 0)");
+    return;
+  }
+  CAL[indice] = valor;
+  guardarCalibracion();
+  Serial.printf("# Calibracion celda %s = %.4f\n", ETQ[indice], valor);
+}
+
 void imprimirEncabezado() {
   Serial.printf("n,t_us,%s,%s,%s,%s\n", ETQ[0], ETQ[1], ETQ[2], ETQ[3]);
 }
@@ -216,18 +303,46 @@ void reiniciarConteo() {
   muestrasConteo = 0;
 }
 
+// Los comandos de una letra se ejecutan al vuelo (el host los manda sueltos,
+// sin salto de línea). 'K' es la excepción: lleva parámetros, así que a partir
+// de ahí se junta la línea hasta el '\n'.
+char bufferComando[32];
+int  largoComando = -1;            // -1 = no estamos juntando una línea
+
 void revisarComandos() {
   while (Serial.available()) {
     char c = Serial.read();
+
+    if (largoComando >= 0) {
+      if (c == '\n' || c == '\r') {
+        bufferComando[largoComando] = '\0';
+        aplicarComandoCalibracion(bufferComando);
+        largoComando = -1;
+      } else if (largoComando < (int)sizeof(bufferComando) - 1) {
+        bufferComando[largoComando++] = c;
+      } else {
+        Serial.println("# Comando demasiado largo, descartado");
+        largoComando = -1;
+      }
+      continue;
+    }
+
     switch (c) {
+      case 'K':
+        largoComando = 0;          // empieza a juntar "K<i>:<valor>"
+        break;
+      case 'p': case 'P':
+        imprimirEstado();
+        break;
       case 't': case 'T':
         tarar();
+        guardarTara();
         imprimirEncabezado();
         reiniciarConteo();
         break;
       case 'c': case 'C':
         modoCrudo = !modoCrudo;
-        Serial.printf("# Modo %s\n", modoCrudo ? "crudo" : "calibrado");
+        imprimirEstado();
         imprimirEncabezado();
         break;
       case 's': case 'S':
@@ -267,9 +382,14 @@ void setup() {
   digitalWrite(PIN_HX_SCK, LOW);
   for (int i = 0; i < N_SENS; i++) pinMode(PIN_DOUT[i], INPUT);
 
+  cargarDesdeMemoria();            // calibración y tara guardadas, si las hay
+  imprimirEstado();
+
   Serial.println("# Sincronizando HX711...");
   resincronizar();
 
+  // Tara automática al encender, pero sin pisar la guardada: si la tara de
+  // arranque falla por timeout, queda la última buena de la NVS.
   tarar();
   imprimirEncabezado();
   reiniciarConteo();

@@ -51,7 +51,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R12 · Host: base de tiempo del dispositivo.** Usar el reloj del firmware
   en vez de `Instant::now()` del host (que agrupa muestras por el buffering
   del USB CDC y sesga la velocidad media), y reportar muestras perdidas.
-- [ ] **R13 · Firmware: calibración en NVS.** Guardar tara y calibración por
+- [x] **R13 · Firmware: calibración en NVS.** Guardar tara y calibración por
   celda en memoria no volátil, con comandos para setearlas desde la app, en
   vez de `#define` que obligan a recompilar.
 - [ ] **R14 · Firmware: estado consultable y salida no bloqueante.** Comando que
