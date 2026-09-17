@@ -19,7 +19,7 @@ use crate::calibracion::{self, Asistente};
 use crate::config::{self, Config};
 use crate::descubrimiento::{self, EventoDescubrimiento};
 use crate::estabilometria::{
-    Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
+    Acumulador, Condicion, MetricasBalance, Superficie, ajustar_elipse95, calcular_metricas, cociente_area,
 };
 use crate::exportar::exportar_csv;
 use crate::filtro::filtrar_registro;
@@ -272,6 +272,10 @@ pub struct PosturografoxApp {
     // Registro de sesión: sin límite mientras dura (a diferencia de los
     // buffers de arriba, que son ventanas acotadas solo para dibujar).
     sesion_actual: Vec<[f64; 3]>, // [t_s, cop_ml_cm, cop_ap_cm]
+    /// Métricas de la sesión en curso, actualizadas muestra a muestra: el
+    /// panel en vivo se repinta a 30 fps y recalcular todo el registro en cada
+    /// frame es O(n) sobre una serie que no para de crecer.
+    acumulador: Acumulador,
     ultimo_registro: Vec<[f64; 3]>,
     ultima_sesion: Option<MetricasBalance>,
     ultima_condicion: Condicion,
@@ -341,6 +345,7 @@ impl Default for PosturografoxApp {
             peso_kg: 0.0,
 
             sesion_actual: Vec::new(),
+            acumulador: Acumulador::nuevo(),
             ultimo_registro: Vec::new(),
             ultima_sesion: None,
             ultima_condicion: Condicion::default(),
@@ -461,6 +466,7 @@ impl PosturografoxApp {
         self.ml_buf.clear();
         self.ap_buf.clear();
         self.sesion_actual.clear();
+        self.acumulador = Acumulador::nuevo();
     }
 
     /// Cierra la sesión en curso: calcula sus métricas, las guarda como
@@ -607,6 +613,7 @@ impl PosturografoxApp {
             let transcurrido = m.t - inicio;
             if !self.ensayo_cerrado && transcurrido >= self.config.descarte_inicial_s {
                 self.sesion_actual.push([m.t, cop_ml, cop_ap]);
+                self.acumulador.agregar([m.t, cop_ml, cop_ap]);
                 if self.config.ensayo_duracion_fija
                     && transcurrido >= self.config.descarte_inicial_s + self.config.duracion_ensayo_s
                 {
@@ -1118,7 +1125,7 @@ impl PosturografoxApp {
     /// Las métricas que se están mostrando: las de la toma en curso o las de
     /// la última sesión cerrada.
     fn metricas_mostradas(&self) -> Option<MetricasBalance> {
-        if self.ocupado && !self.ensayo_cerrado { calcular_metricas(&self.sesion_actual) } else { self.ultima_sesion }
+        if self.ocupado && !self.ensayo_cerrado { self.acumulador.metricas() } else { self.ultima_sesion }
     }
 
     /// Genera el informe imprimible de la última sesión y lo abre con el
@@ -1155,7 +1162,7 @@ impl PosturografoxApp {
 
     fn panel_metricas(&self, ui: &mut egui::Ui) {
         let (etiqueta, acento, texto) = if self.ocupado {
-            match calcular_metricas(&self.sesion_actual) {
+            match self.acumulador.metricas() {
                 Some(m) => ("EN VIVO", VERDE, m.texto()),
                 None => ("EN VIVO", VERDE, "Recolectando datos...".to_string()),
             }
@@ -1227,12 +1234,6 @@ impl PosturografoxApp {
         Some(cocientes.iter().map(|(n, v)| format!("{n} {v:.2}x")).collect::<Vec<_>>().join(" · "))
     }
 
-    /// El registro que se está midiendo (o el último cerrado si nadie está
-    /// arriba). Es la fuente única de las métricas y de la elipse dibujada.
-    fn registro_medido(&self) -> &[[f64; 3]] {
-        if self.ocupado && !self.ensayo_cerrado { &self.sesion_actual } else { &self.ultimo_registro }
-    }
-
     fn plot_cop(&self, ui: &mut egui::Ui, altura: f32) {
         let margen = 1.2;
         let x_lim = self.config.ancho_cm / 2.0 * margen;
@@ -1255,7 +1256,13 @@ impl PosturografoxApp {
         // métricas, no sobre la ventana del trazo: si se ajustara sobre el
         // trazo (una ventana de otro largo, y sin filtrar), el área dibujada
         // no sería la que informa el panel.
-        let elipse = if self.config.mostrar_elipse { ajustar_elipse95(self.registro_medido()) } else { None };
+        let elipse = if !self.config.mostrar_elipse {
+            None
+        } else if self.ocupado && !self.ensayo_cerrado {
+            self.acumulador.elipse() // en vivo: sale de las sumas acumuladas
+        } else {
+            ajustar_elipse95(&self.ultimo_registro)
+        };
 
         Plot::new("plot_cop")
             .height(altura)

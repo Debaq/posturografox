@@ -223,10 +223,13 @@ pub fn ajustar_elipse95_xy(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
         cov_xy += dx * dy;
     }
     let gl = nf - 1.0;
-    var_x /= gl;
-    var_y /= gl;
-    cov_xy /= gl;
+    elipse_de_covarianza(media_x, media_y, var_x / gl, var_y / gl, cov_xy / gl)
+}
 
+/// Elipse a partir de la media y la covarianza ya calculadas. Está separada
+/// para que el acumulador incremental (ver `Acumulador`) llegue a la misma
+/// elipse sin recorrer la serie entera.
+pub fn elipse_de_covarianza(media_x: f64, media_y: f64, var_x: f64, var_y: f64, cov_xy: f64) -> Option<Elipse> {
     let tr = var_x + var_y;
     let det = var_x * var_y - cov_xy * cov_xy;
     let disc = (tr * tr / 4.0 - det).max(0.0).sqrt();
@@ -240,6 +243,119 @@ pub fn ajustar_elipse95_xy(xs: &[f64], ys: &[f64]) -> Option<Elipse> {
         semi_menor: (lambda2 * CHI2_95_2GL).sqrt(),
         angulo,
     })
+}
+
+/// Acumulador incremental de métricas.
+///
+/// El panel en vivo se repinta decenas de veces por segundo, y recalcular
+/// todo el registro en cada frame es O(n) sobre una serie que crece sin parar
+/// (80 muestras por segundo). Acá se guardan solo las sumas necesarias, así
+/// que agregar una muestra es O(1) y pedir las métricas también.
+///
+/// No incluye las métricas frecuenciales: esas necesitan la serie completa y
+/// se calculan una sola vez, al cerrar la sesión.
+#[derive(Clone, Copy, Default)]
+pub struct Acumulador {
+    n: usize,
+    suma_x: f64,
+    suma_y: f64,
+    suma_xx: f64,
+    suma_yy: f64,
+    suma_xy: f64,
+    longitud_cm: f64,
+    recorrido_ml_cm: f64,
+    recorrido_ap_cm: f64,
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+    t_primero: f64,
+    t_ultimo: f64,
+    ultimo: Option<(f64, f64)>,
+}
+
+impl Acumulador {
+    pub fn nuevo() -> Self {
+        Self {
+            min_x: f64::INFINITY,
+            max_x: f64::NEG_INFINITY,
+            min_y: f64::INFINITY,
+            max_y: f64::NEG_INFINITY,
+            ..Default::default()
+        }
+    }
+
+    pub fn agregar(&mut self, muestra: [f64; 3]) {
+        let [t, x, y] = muestra;
+        if self.n == 0 {
+            self.t_primero = t;
+        }
+        self.t_ultimo = t;
+
+        if let Some((px, py)) = self.ultimo {
+            let dx = x - px;
+            let dy = y - py;
+            self.longitud_cm += (dx * dx + dy * dy).sqrt();
+            self.recorrido_ml_cm += dx.abs();
+            self.recorrido_ap_cm += dy.abs();
+        }
+        self.ultimo = Some((x, y));
+
+        self.n += 1;
+        self.suma_x += x;
+        self.suma_y += y;
+        self.suma_xx += x * x;
+        self.suma_yy += y * y;
+        self.suma_xy += x * y;
+        self.min_x = self.min_x.min(x);
+        self.max_x = self.max_x.max(x);
+        self.min_y = self.min_y.min(y);
+        self.max_y = self.max_y.max(y);
+    }
+
+    /// Elipse de confianza de lo acumulado hasta ahora.
+    pub fn elipse(&self) -> Option<Elipse> {
+        if self.n < 3 {
+            return None;
+        }
+        let nf = self.n as f64;
+        let media_x = self.suma_x / nf;
+        let media_y = self.suma_y / nf;
+        let gl = nf - 1.0;
+        // Varianza a partir de las sumas: Σ(x-x̄)² = Σx² - n·x̄².
+        let var_x = (self.suma_xx - nf * media_x * media_x).max(0.0) / gl;
+        let var_y = (self.suma_yy - nf * media_y * media_y).max(0.0) / gl;
+        let cov_xy = (self.suma_xy - nf * media_x * media_y) / gl;
+        elipse_de_covarianza(media_x, media_y, var_x, var_y, cov_xy)
+    }
+
+    /// Métricas de amplitud y velocidad. `None` con menos de 3 muestras,
+    /// igual que `calcular_metricas`.
+    pub fn metricas(&self) -> Option<MetricasBalance> {
+        if self.n < 3 {
+            return None;
+        }
+        let nf = self.n as f64;
+        let media_x = self.suma_x / nf;
+        let media_y = self.suma_y / nf;
+        let duracion_s = self.t_ultimo - self.t_primero;
+        let por_segundo = |v: f64| if duracion_s > 0.0 { v / duracion_s } else { 0.0 };
+
+        Some(MetricasBalance {
+            longitud_cm: self.longitud_cm,
+            area95_cm2: self.elipse().map_or(0.0, |e| e.area()),
+            velocidad_media_cms: por_segundo(self.longitud_cm),
+            duracion_s,
+            rms_ml_cm: ((self.suma_xx - nf * media_x * media_x).max(0.0) / nf).sqrt(),
+            rms_ap_cm: ((self.suma_yy - nf * media_y * media_y).max(0.0) / nf).sqrt(),
+            rango_ml_cm: self.max_x - self.min_x,
+            rango_ap_cm: self.max_y - self.min_y,
+            velocidad_ml_cms: por_segundo(self.recorrido_ml_cm),
+            velocidad_ap_cms: por_segundo(self.recorrido_ap_cm),
+            // Las frecuenciales necesitan la serie completa: se calculan al cerrar.
+            ..MetricasBalance::default()
+        })
+    }
 }
 
 impl Elipse {
@@ -339,6 +455,44 @@ mod tests {
         let m = calcular_metricas(&muestras).unwrap();
         assert!((m.frec_mediana_ml_hz - 0.5).abs() < 0.2, "esperaba ~0.5 Hz, dio {}", m.frec_mediana_ml_hz);
         assert!(m.f80_ml_hz >= m.frec_mediana_ml_hz);
+    }
+
+    #[test]
+    fn el_acumulador_da_las_mismas_metricas_que_el_calculo_completo() {
+        let muestras: Vec<[f64; 3]> = (0..400)
+            .map(|i| {
+                let t = i as f64 / 80.0;
+                [t, (t * 2.0).sin() * 1.5, (t * 1.3).cos() * 0.8]
+            })
+            .collect();
+
+        let completo = calcular_metricas(&muestras).unwrap();
+        let mut acumulador = Acumulador::nuevo();
+        for m in &muestras {
+            acumulador.agregar(*m);
+        }
+        let incremental = acumulador.metricas().unwrap();
+
+        let cerca = |a: f64, b: f64, que: &str| assert!((a - b).abs() < 1e-6, "{que}: {a} vs {b}");
+        cerca(incremental.longitud_cm, completo.longitud_cm, "longitud");
+        cerca(incremental.area95_cm2, completo.area95_cm2, "área");
+        cerca(incremental.velocidad_media_cms, completo.velocidad_media_cms, "velocidad");
+        cerca(incremental.rms_ml_cm, completo.rms_ml_cm, "rms ml");
+        cerca(incremental.rms_ap_cm, completo.rms_ap_cm, "rms ap");
+        cerca(incremental.rango_ml_cm, completo.rango_ml_cm, "rango ml");
+        cerca(incremental.rango_ap_cm, completo.rango_ap_cm, "rango ap");
+        cerca(incremental.velocidad_ml_cms, completo.velocidad_ml_cms, "velocidad ml");
+        cerca(incremental.duracion_s, completo.duracion_s, "duración");
+    }
+
+    #[test]
+    fn el_acumulador_necesita_tres_muestras_igual_que_el_calculo_completo() {
+        let mut acumulador = Acumulador::nuevo();
+        acumulador.agregar([0.0, 0.0, 0.0]);
+        acumulador.agregar([1.0, 1.0, 1.0]);
+        assert!(acumulador.metricas().is_none());
+        acumulador.agregar([2.0, 2.0, 2.0]);
+        assert!(acumulador.metricas().is_some());
     }
 
     #[test]

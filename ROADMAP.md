@@ -96,7 +96,7 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R25 · Degradé del trazo sin HashMap.** Hoy se reconstruye un mapa de
   hasta 20.000 entradas por frame, y dos puntos idénticos colisionan y toman
   el color equivocado.
-- [ ] **R26 · Métricas incrementales.** Acumuladores O(1) por muestra en vez de
+- [x] **R26 · Métricas incrementales.** Acumuladores O(1) por muestra en vez de
   recalcular toda la sesión en cada frame.
 - [ ] **R27 · Repintado por evento.** No repintar a 30 fps fijos cuando no llega
   ninguna muestra.
