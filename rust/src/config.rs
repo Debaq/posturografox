@@ -20,6 +20,9 @@ pub mod defecto {
     pub const ESPACIADO_PUNTOS: usize = 8;
     pub const VENTANA_TIEMPO_S: f64 = 20.0;
     pub const MOSTRAR_ELIPSE: bool = true;
+    pub const ENSAYO_DURACION_FIJA: bool = true;
+    pub const DURACION_ENSAYO_S: f64 = 30.0;
+    pub const DESCARTE_INICIAL_S: f64 = 3.0;
     pub const FILTRAR_COP: bool = true;
     pub const FILTRO_CORTE_HZ: f64 = 6.0;
     pub const DURACION_PARTIDA_S: f32 = 60.0;
@@ -66,6 +69,17 @@ pub struct Config {
     /// Elipse de confianza 95% sobre el trazo.
     pub mostrar_elipse: bool,
 
+    // ── Ensayo clínico ──────────────────────────────────────────────────
+    /// El registro se cierra solo al cumplirse `duracion_ensayo_s`. Sin esto,
+    /// la sesión dura lo que la persona se quede parada y los ensayos no son
+    /// comparables entre sí.
+    pub ensayo_duracion_fija: bool,
+    /// Ventana de registro que entra en las métricas.
+    pub duracion_ensayo_s: f64,
+    /// Segundos iniciales que no se registran: la persona recién se subió y
+    /// todavía se está acomodando.
+    pub descarte_inicial_s: f64,
+
     // ── Procesamiento de la señal ───────────────────────────────────────
     /// Filtra el COP antes de calcular las métricas de la sesión.
     pub filtrar_cop: bool,
@@ -91,6 +105,9 @@ impl Default for Config {
             espaciado_puntos: defecto::ESPACIADO_PUNTOS,
             ventana_tiempo_s: defecto::VENTANA_TIEMPO_S,
             mostrar_elipse: defecto::MOSTRAR_ELIPSE,
+            ensayo_duracion_fija: defecto::ENSAYO_DURACION_FIJA,
+            duracion_ensayo_s: defecto::DURACION_ENSAYO_S,
+            descarte_inicial_s: defecto::DESCARTE_INICIAL_S,
             filtrar_cop: defecto::FILTRAR_COP,
             filtro_corte_hz: defecto::FILTRO_CORTE_HZ,
             duracion_partida_s: defecto::DURACION_PARTIDA_S,
@@ -179,6 +196,24 @@ fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
             ui.end_row();
             ui.label("Elipse de confianza 95%");
             ui.checkbox(&mut cfg.mostrar_elipse, "");
+            ui.end_row();
+        });
+
+        seccion(ui, "ENSAYO CLÍNICO", acento);
+        egui::Grid::new("grid_ensayo").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Duración fija del ensayo").on_hover_text(
+                "El registro se cierra solo. Sin esto, dos ensayos de distinta duración no se pueden comparar",
+            );
+            ui.checkbox(&mut cfg.ensayo_duracion_fija, "");
+            ui.end_row();
+            ui.label("Duración del registro");
+            ui.add_enabled(
+                cfg.ensayo_duracion_fija,
+                egui::DragValue::new(&mut cfg.duracion_ensayo_s).range(5.0..=300.0).speed(1.0).suffix(" s"),
+            );
+            ui.end_row();
+            ui.label("Descarte inicial").on_hover_text("Segundos de acomodación que no entran en las métricas");
+            ui.add(egui::DragValue::new(&mut cfg.descarte_inicial_s).range(0.0..=30.0).speed(0.5).suffix(" s"));
             ui.end_row();
         });
 

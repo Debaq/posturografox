@@ -132,6 +132,18 @@ impl ModoFirmware {
     }
 }
 
+/// En qué etapa está el ensayo que se está tomando.
+enum ProgresoEnsayo {
+    /// Descarte inicial: la persona se acaba de subir y se acomoda.
+    Acomodando(f64),
+    /// Registrando con duración fija.
+    Grabando { restante_s: f64, fraccion: f64 },
+    /// Registrando sin corte automático (duración fija desactivada).
+    Libre(f64),
+    /// Se cumplió la duración: el resultado ya está guardado.
+    Completo,
+}
+
 fn empujar_acotado(buf: &mut VecDeque<f64>, valor: f64, max: usize) {
     buf.push_back(valor);
     if buf.len() > max {
@@ -171,6 +183,12 @@ pub struct PosturografoxApp {
 
     // Detección automática de subida/bajada
     ocupado: bool,
+    /// Tiempo (del reloj del dispositivo) en que la persona se subió. Con él
+    /// se descuenta el descarte inicial y se mide la duración del ensayo.
+    t_subida: Option<f64>,
+    /// El ensayo de duración fija ya se cerró: no se vuelve a grabar hasta
+    /// que la persona se baje y se suba otra vez.
+    ensayo_cerrado: bool,
     contador_arriba: u32,
     contador_abajo: u32,
 
@@ -233,6 +251,8 @@ impl Default for PosturografoxApp {
             muestras_perdidas: 0,
 
             ocupado: false,
+            t_subida: None,
+            ensayo_cerrado: false,
             contador_arriba: 0,
             contador_abajo: 0,
 
@@ -425,6 +445,8 @@ impl PosturografoxApp {
             self.contador_abajo = 0;
             if !self.ocupado && self.contador_arriba >= self.config.debounce {
                 self.ocupado = true;
+                self.t_subida = None; // lo fija la primera muestra con la persona arriba
+                self.ensayo_cerrado = false;
                 self.tara_software(true);
                 self.reiniciar_sesion();
                 self.estado = "Persona detectada: tara automática".to_string();
@@ -435,7 +457,15 @@ impl PosturografoxApp {
             self.contador_arriba = 0;
             if self.ocupado && self.contador_abajo >= self.config.debounce {
                 self.ocupado = false;
-                self.cerrar_sesion();
+                self.t_subida = None;
+                if self.ensayo_cerrado {
+                    // Ya se cerró solo al cumplir la duración: no pisar ese
+                    // resultado con el registro vacío de después.
+                    self.reiniciar_sesion();
+                    self.ensayo_cerrado = false;
+                } else {
+                    self.cerrar_sesion();
+                }
                 self.estado = "Plataforma libre: sesión reiniciada".to_string();
             }
         }
@@ -464,15 +494,54 @@ impl PosturografoxApp {
         };
 
         if self.ocupado {
+            // Los gráficos muestran todo desde que se subió; el registro que
+            // se mide empieza después del descarte de acomodación.
             empujar_acotado(&mut self.trazo_x, cop_ml, MAX_PUNTOS_TRAZO);
             empujar_acotado(&mut self.trazo_y, cop_ap, MAX_PUNTOS_TRAZO);
             empujar_acotado(&mut self.t_buf, m.t, MAX_MUESTRAS_TIEMPO);
             empujar_acotado(&mut self.ml_buf, cop_ml, MAX_MUESTRAS_TIEMPO);
             empujar_acotado(&mut self.ap_buf, cop_ap, MAX_MUESTRAS_TIEMPO);
-            self.sesion_actual.push([m.t, cop_ml, cop_ap]);
+
+            let inicio = *self.t_subida.get_or_insert(m.t);
+            let transcurrido = m.t - inicio;
+            if !self.ensayo_cerrado && transcurrido >= self.config.descarte_inicial_s {
+                self.sesion_actual.push([m.t, cop_ml, cop_ap]);
+                if self.config.ensayo_duracion_fija
+                    && transcurrido >= self.config.descarte_inicial_s + self.config.duracion_ensayo_s
+                {
+                    self.cerrar_sesion();
+                    self.ensayo_cerrado = true;
+                    self.estado =
+                        format!("Ensayo completo ({:.0} s): ya se puede bajar", self.config.duracion_ensayo_s);
+                }
+            }
         }
         self.ultimo_ml = cop_ml;
         self.ultimo_ap = cop_ap;
+    }
+
+    /// Cómo va el ensayo en curso, para mostrarlo en pantalla.
+    fn progreso_ensayo(&self) -> Option<ProgresoEnsayo> {
+        if !self.ocupado {
+            return None;
+        }
+        if self.ensayo_cerrado {
+            return Some(ProgresoEnsayo::Completo);
+        }
+        let inicio = self.t_subida?;
+        let ahora = self.t_buf.back().copied()?;
+        let transcurrido = ahora - inicio;
+        if transcurrido < self.config.descarte_inicial_s {
+            return Some(ProgresoEnsayo::Acomodando(self.config.descarte_inicial_s - transcurrido));
+        }
+        if !self.config.ensayo_duracion_fija {
+            return Some(ProgresoEnsayo::Libre(transcurrido - self.config.descarte_inicial_s));
+        }
+        let registrado = transcurrido - self.config.descarte_inicial_s;
+        Some(ProgresoEnsayo::Grabando {
+            restante_s: (self.config.duracion_ensayo_s - registrado).max(0.0),
+            fraccion: (registrado / self.config.duracion_ensayo_s).clamp(0.0, 1.0),
+        })
     }
 
     fn procesar_evento(&mut self, evento: EventoSerie) {
@@ -740,6 +809,29 @@ impl PosturografoxApp {
         }
     }
 
+    /// Barra de progreso del ensayo: cuánto falta para que empiece a contar
+    /// y cuánto queda de registro. Sin esto, la duración fija sería una regla
+    /// invisible que corta la toma cuando menos se espera.
+    fn barra_ensayo(&self, ui: &mut egui::Ui) {
+        let Some(progreso) = self.progreso_ensayo() else { return };
+        let (texto, fraccion, color) = match progreso {
+            ProgresoEnsayo::Acomodando(restante) => {
+                (format!("Acomodándose... el registro empieza en {restante:.0} s"), None, AMARILLO)
+            }
+            ProgresoEnsayo::Grabando { restante_s, fraccion } => {
+                (format!("Grabando ensayo · quedan {restante_s:.0} s"), Some(fraccion as f32), VERDE)
+            }
+            ProgresoEnsayo::Libre(transcurrido) => (format!("Grabando · {transcurrido:.0} s"), None, VERDE),
+            ProgresoEnsayo::Completo => ("Ensayo completo: ya se puede bajar".to_string(), Some(1.0), AZUL),
+        };
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(texto).small().strong().color(color.gamma_multiply(0.8)));
+            if let Some(fraccion) = fraccion {
+                ui.add(egui::ProgressBar::new(fraccion).desired_width(180.0).fill(color.gamma_multiply(0.8)));
+            }
+        });
+    }
+
     fn panel_metricas(&self, ui: &mut egui::Ui) {
         let (etiqueta, acento, texto) = if self.ocupado {
             match calcular_metricas(&self.sesion_actual) {
@@ -768,6 +860,7 @@ impl PosturografoxApp {
                     ui.separator();
                     ui.label(texto);
                 });
+                self.barra_ensayo(ui);
                 if let Some(resumen) = self.resumen_ctsib() {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("CTSIB").small().strong().color(LILA.gamma_multiply(0.7)));
