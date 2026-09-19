@@ -13,7 +13,7 @@
 //! ocho del examen guiado.
 
 use crate::juego::EventoRoca;
-use crate::rango::RangoCalibrado;
+use crate::rango::{EXIGENCIA_MAX, EXIGENCIA_MIN, RangoCalibrado};
 
 /// Velocidad ML a partir de la cual se considera que el paciente arrancó la
 /// maniobra. Por debajo de esto es oscilación de estar parado, no respuesta.
@@ -222,6 +222,72 @@ pub fn resumir(medidas: &[Result<Maniobra, Descarte>]) -> Option<Resumen> {
     })
 }
 
+/// Cuántas maniobras válidas hacen falta de cada lado para decir algo. Con
+/// menos, la comparación entre lados es ruido.
+const MINIMO_POR_LADO: usize = 10;
+
+/// Control direccional por debajo del cual el problema no es la dosis: si la
+/// mitad de las veces arranca para el lado equivocado, subir la exigencia no
+/// entrena, frustra.
+const CONTROL_MINIMO: f64 = 0.5;
+
+/// Qué hacer con la exigencia en la próxima sesión.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Sugerencia {
+    /// Cubrió holgado lo que se le pedía: se puede pedir más.
+    Subir(f64),
+    Mantener,
+    /// No llegó a lo que se le pedía: pedir menos.
+    Bajar(f64),
+}
+
+/// Por qué no se puede sugerir nada. Se muestra en vez de esconder la
+/// sugerencia: el evaluador tiene que saber si falta dato o si el dato dice
+/// que está bien así.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SinSugerencia {
+    /// Se jugó con el rango por defecto: las amplitudes no son de la persona.
+    SinCalibrar,
+    /// Faltan maniobras válidas de alguno de los dos lados.
+    PocasManiobras { izquierda: usize, derecha: usize },
+}
+
+const PASO_EXIGENCIA: f64 = 0.05;
+
+/// Propone la exigencia de la próxima partida a partir de lo que el paciente
+/// hizo, no del puntaje: el puntaje sube solo con la velocidad del juego.
+///
+/// La referencia es la amplitud que efectivamente usó contra la que se le
+/// pedía: a exigencia `e`, llegar al borde de la pista exige cubrir esa
+/// fracción de su alcance. Si la cubre de sobra, se puede pedir más.
+pub fn sugerir_exigencia(resumen: &Resumen, exigencia: f64, calibrado: bool) -> Result<Sugerencia, SinSugerencia> {
+    if !calibrado {
+        return Err(SinSugerencia::SinCalibrar);
+    }
+    if resumen.validas_izquierda < MINIMO_POR_LADO || resumen.validas_derecha < MINIMO_POR_LADO {
+        return Err(SinSugerencia::PocasManiobras {
+            izquierda: resumen.validas_izquierda,
+            derecha: resumen.validas_derecha,
+        });
+    }
+
+    let cubierto = resumen.fraccion_alcance_mediana_izq.min(resumen.fraccion_alcance_mediana_der);
+    // Redondeado al 1%: la exigencia se muestra y se elige en porcentaje, y
+    // un 0.6499999 arrastrado por la suma en coma flotante sería ruido.
+    let al_uno_por_ciento = |v: f64| (v * 100.0).round() / 100.0;
+    let subir = al_uno_por_ciento((exigencia + PASO_EXIGENCIA).min(EXIGENCIA_MAX));
+    let bajar = al_uno_por_ciento((exigencia - PASO_EXIGENCIA).max(EXIGENCIA_MIN));
+    // El lado peor es el que manda: subir la dosis por el lado bueno dejaría
+    // el hemicuerpo afectado sin poder esquivar nada.
+    if resumen.control_direccional < CONTROL_MINIMO || cubierto < exigencia * 0.6 {
+        return Ok(if bajar < exigencia { Sugerencia::Bajar(bajar) } else { Sugerencia::Mantener });
+    }
+    if cubierto >= exigencia && resumen.control_direccional >= 0.8 {
+        return Ok(if subir > exigencia { Sugerencia::Subir(subir) } else { Sugerencia::Mantener });
+    }
+    Ok(Sugerencia::Mantener)
+}
+
 /// Mediana y no promedio: una maniobra en la que el paciente se distrajo
 /// arrastra la media y deja de describir a las demás.
 fn mediana(valores: &[f64]) -> f64 {
@@ -400,6 +466,71 @@ mod tests {
     fn sin_maniobras_validas_no_hay_resumen() {
         assert!(resumir(&[]).is_none());
         assert!(resumir(&[Err(Descarte::Congelada), Err(Descarte::NoExigia)]).is_none());
+    }
+
+    fn resumen_de(cubierto: f64, control: f64, por_lado: usize) -> Resumen {
+        Resumen {
+            validas: por_lado * 2,
+            total: por_lado * 2,
+            validas_izquierda: por_lado,
+            validas_derecha: por_lado,
+            latencia_mediana_izq_s: 0.3,
+            latencia_mediana_der_s: 0.3,
+            velocidad_pico_mediana_izq_cms: 8.0,
+            velocidad_pico_mediana_der_cms: 8.0,
+            fraccion_alcance_mediana_izq: cubierto,
+            fraccion_alcance_mediana_der: cubierto,
+            asimetria: 0.0,
+            control_direccional: control,
+        }
+    }
+
+    #[test]
+    fn cubrir_lo_que_se_pide_sugiere_subir_la_dosis() {
+        let r = resumen_de(0.75, 0.95, 12);
+        assert_eq!(sugerir_exigencia(&r, 0.7, true), Ok(Sugerencia::Subir(0.75)));
+    }
+
+    #[test]
+    fn quedarse_corto_sugiere_bajar_la_dosis() {
+        let r = resumen_de(0.3, 0.9, 12);
+        assert_eq!(sugerir_exigencia(&r, 0.7, true), Ok(Sugerencia::Bajar(0.65)));
+    }
+
+    #[test]
+    fn arrancar_para_cualquier_lado_no_es_falta_de_dosis() {
+        // Cubre la amplitud pero se equivoca de lado la mitad de las veces:
+        // subir la exigencia no entrenaría nada.
+        let r = resumen_de(0.9, 0.4, 12);
+        assert_eq!(sugerir_exigencia(&r, 0.7, true), Ok(Sugerencia::Bajar(0.65)));
+    }
+
+    #[test]
+    fn el_lado_peor_es_el_que_manda() {
+        let mut r = resumen_de(0.9, 0.95, 12);
+        r.fraccion_alcance_mediana_izq = 0.35; // el hemicuerpo afectado no llega
+        assert_eq!(sugerir_exigencia(&r, 0.7, true), Ok(Sugerencia::Bajar(0.65)));
+    }
+
+    #[test]
+    fn la_sugerencia_respeta_los_topes() {
+        let r = resumen_de(0.95, 0.95, 12);
+        assert_eq!(sugerir_exigencia(&r, EXIGENCIA_MAX, true), Ok(Sugerencia::Mantener));
+        let flojo = resumen_de(0.1, 0.9, 12);
+        assert_eq!(sugerir_exigencia(&flojo, EXIGENCIA_MIN, true), Ok(Sugerencia::Mantener));
+    }
+
+    #[test]
+    fn sin_calibrar_no_se_sugiere_nada() {
+        let r = resumen_de(0.8, 0.95, 12);
+        assert_eq!(sugerir_exigencia(&r, 0.7, false), Err(SinSugerencia::SinCalibrar));
+    }
+
+    #[test]
+    fn con_pocas_maniobras_de_un_lado_no_se_sugiere_nada() {
+        let mut r = resumen_de(0.8, 0.95, 12);
+        r.validas_izquierda = 3;
+        assert_eq!(sugerir_exigencia(&r, 0.7, true), Err(SinSugerencia::PocasManiobras { izquierda: 3, derecha: 12 }));
     }
 
     #[test]

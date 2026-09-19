@@ -29,6 +29,7 @@ use crate::juego;
 use crate::limites;
 use crate::maniobras;
 use crate::precarga::{Precarga, Recurso};
+use crate::rango;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 use crate::simulador::Simulador;
 use crate::transporte::Transporte;
@@ -914,6 +915,34 @@ impl PosturografoxApp {
         }
     }
 
+    /// Qué exigencia proponer para la próxima partida, a partir de lo que el
+    /// paciente hizo en la última. Devuelve el texto y, si hay un cambio que
+    /// ofrecer, el valor propuesto.
+    ///
+    /// Cuando no se puede sugerir nada se dice por qué en vez de esconder la
+    /// línea: "faltan maniobras" y "está en la dosis justa" son cosas muy
+    /// distintas para quien decide.
+    fn sugerencia_de_exigencia(&self) -> Option<(String, Option<f64>)> {
+        let juego = self.ultima_partida.as_ref()?;
+        let resumen = juego.resumen.as_ref()?;
+        let calibrado = juego.rango.origen != rango::Origen::Defecto;
+        match maniobras::sugerir_exigencia(resumen, juego.exigencia, calibrado) {
+            Ok(maniobras::Sugerencia::Subir(v)) => {
+                Some((format!("Cubrió lo que se le pedía: probar {:.0}%", v * 100.0), Some(v)))
+            }
+            Ok(maniobras::Sugerencia::Bajar(v)) => {
+                Some((format!("No llegó a lo que se le pedía: probar {:.0}%", v * 100.0), Some(v)))
+            }
+            Ok(maniobras::Sugerencia::Mantener) => Some(("La exigencia actual parece la adecuada".to_string(), None)),
+            Err(maniobras::SinSugerencia::SinCalibrar) => {
+                Some(("Sin calibrar no se puede sugerir una exigencia".to_string(), None))
+            }
+            Err(maniobras::SinSugerencia::PocasManiobras { izquierda, derecha }) => {
+                Some((format!("Pocas maniobras para sugerir una exigencia ({izquierda} izq / {derecha} der)"), None))
+            }
+        }
+    }
+
     /// Archiva la partida que acaba de terminar: el tramo de COP que le
     /// corresponde, las maniobras que exigió y con qué rango se jugó.
     ///
@@ -1574,7 +1603,11 @@ impl PosturografoxApp {
         let pantalla_del_juego =
             self.pantalla_juego.and_then(|i| self.pantallas.actual().get(i).map(|p| p.etiqueta())).unwrap_or_default();
         let mut calibrar_juego = false;
+        let mut aplicar_exigencia: Option<f64> = None;
         let resumen_rango = self.estado_juego.resumen_calibracion();
+        // La sugerencia vive solo acá, en la ventana del evaluador: en la
+        // pantalla del paciente no aporta y expone la dosis del ejercicio.
+        let sugerencia = self.sugerencia_de_exigencia();
         tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
             if juego_aparte {
                 ui.label(format!("🎮 Jugando en {pantalla_del_juego}"));
@@ -1593,6 +1626,14 @@ impl PosturografoxApp {
             {
                 calibrar_juego = true;
             }
+            if let Some((texto, propuesta)) = &sugerencia {
+                ui.label(egui::RichText::new(texto).small());
+                if let Some(valor) = propuesta
+                    && ui.button(format!("Dejar la exigencia en {:.0}%", valor * 100.0)).clicked()
+                {
+                    aplicar_exigencia = Some(*valor);
+                }
+            }
         });
         if abrir_juego {
             self.abrir_juego(ui.ctx());
@@ -1607,6 +1648,12 @@ impl PosturografoxApp {
         }
         if cerrar_juego {
             self.cerrar_juego();
+        }
+        // Se sugiere, no se aplica sola: si la dificultad se moviera en
+        // silencio, dos partidas de sesiones distintas dejarían de ser
+        // comparables y se perdería lo único que hace medible al juego.
+        if let Some(valor) = aplicar_exigencia {
+            self.config.exigencia_juego = valor;
         }
     }
 
@@ -2382,6 +2429,50 @@ mod tests {
             ]),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn la_sugerencia_de_exigencia_no_sale_de_una_partida_sin_calibrar() {
+        let resumen = crate::maniobras::Resumen {
+            validas: 24,
+            total: 30,
+            validas_izquierda: 12,
+            validas_derecha: 12,
+            latencia_mediana_izq_s: 0.3,
+            latencia_mediana_der_s: 0.3,
+            velocidad_pico_mediana_izq_cms: 8.0,
+            velocidad_pico_mediana_der_cms: 8.0,
+            fraccion_alcance_mediana_izq: 0.9,
+            fraccion_alcance_mediana_der: 0.9,
+            asimetria: 0.0,
+            control_direccional: 0.95,
+        };
+        let mut app = PosturografoxApp {
+            ultima_partida: Some(historial::DatosJuego {
+                rango: rango::RangoCalibrado::por_defecto(40.0, 40.0),
+                exigencia: 0.7,
+                duracion_s: 120.0,
+                gano: true,
+                resumen: Some(resumen),
+            }),
+            ..Default::default()
+        };
+
+        let (texto, propuesta) = app.sugerencia_de_exigencia().expect("hay algo que decir");
+        assert!(texto.contains("Sin calibrar"), "tiene que decir por qué no sugiere: {texto}");
+        assert!(propuesta.is_none(), "sin calibración no se ofrece un valor");
+
+        // Con el mismo desempeño pero un rango medido, sí se puede sugerir.
+        if let Some(partida) = app.ultima_partida.as_mut() {
+            partida.rango = rango::RangoCalibrado::medido(
+                rango::Eje::nuevo(0.0, -5.0, 5.0, 20.0),
+                rango::Eje::nuevo(0.0, -4.0, 8.0, 20.0),
+                rango::Origen::Juego,
+            )
+            .expect("rango utilizable");
+        }
+        let (_, propuesta) = app.sugerencia_de_exigencia().expect("hay algo que decir");
+        assert_eq!(propuesta, Some(0.75));
     }
 
     #[test]

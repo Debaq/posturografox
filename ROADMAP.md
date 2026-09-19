@@ -200,7 +200,7 @@ ejercicio de límites.
   oscila). El informe imprime la definición de la latencia y cuántas
   maniobras válidas hubo sobre el total, para que la métrica no sea una caja
   negra.
-- [ ] **R45 · Sugerencia de exigencia.** Al terminar la partida, proponer el
+- [x] **R45 · Sugerencia de exigencia.** Al terminar la partida, proponer el
   valor siguiente a partir de las métricas —no del puntaje, que sube solo con
   la velocidad—. Solo en la ventana clínica, nunca en la pantalla del
   paciente, y solo con datos suficientes: calibración real y un mínimo de
