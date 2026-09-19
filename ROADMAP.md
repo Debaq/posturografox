@@ -126,3 +126,83 @@ Estado: `[ ]` pendiente · `[x]` hecho
 - [x] **R36 · Límites de estabilidad: resultados.** Guardar distancia alcanzada y
   déficits por dirección, mostrarlos y exportarlos; hoy solo se mide el
   tiempo por objetivo y se pierde al salir.
+
+## Fase 7 — Juego calibrado y medible
+
+El modo juego hoy escala el COP al semieje físico de la plataforma
+(`juego.rs:1058`, 20 cm por defecto). Nadie desplaza su COP 20 cm: la
+excursión voluntaria sana ronda los ±5–8 cm y la de un hemiparético los
+±2–3 cm, y además descentrada. Resultado: el zorro usa una fracción de la
+pista, las rocas del borde son inesquivables por escala y no por déficit, y
+el puntaje no se puede comparar entre pacientes ni entre sesiones.
+
+La fase cambia el eje de la cosa: **el juego es el estímulo, no la medición**.
+El puntaje es motivación; el dato clínico es el COP que ya se está grabando
+mientras el paciente juega (`app.rs:820`), cruzado con los eventos del juego.
+Cada roca es un ensayo de weight-shifting con dirección conocida, así que de
+una partida salen decenas de maniobras medidas en vez de los 8 alcances del
+ejercicio de límites.
+
+- [x] **R37 · Rango calibrado del paciente.** Centro de reposo `x0` y alcances
+  `x_izq`/`x_der` (más el par AP), y mapeo lineal por tramo y asimétrico en
+  lugar de la división por el semieje. Tramos separados porque la carga
+  asimétrica es la regla en rehabilitación y un rango simétrico deja al
+  zorro corrido de forma permanente. Con rango degenerado (<2 cm) la
+  calibración se declara inválida y cae al default: si no, el ruido de un
+  milímetro manda al zorro de punta a punta. Default poblacional cuando no
+  hay calibración (ML ±7 cm, AP +8/−4 cm, recortado a la plataforma), nunca
+  el semieje, y marcado como "sin calibrar" para que el dato no se lea como
+  clínico.
+- [ ] **R38 · Botón "Calibrar".** Calibración por sesión, manual, disponible en
+  la pantalla de espera del juego y en la tarjeta JUEGO de la vista clínica.
+  Reposo 3–5 s para `x0` y alcance sostenido a cada lado para los extremos,
+  presentado con el zorro y una recompensa que se corre al borde: la
+  calibración es también el tutorial de controles. Vive en `EstadoJuego`, no
+  en `Partida`, para sobrevivir a "Reintentar".
+- [ ] **R39 · Calibración heredada del ejercicio de límites.** Si la sesión ya
+  corrió el ejercicio (`limites.rs`), tomar los alcances de E/O y N/S en vez
+  de pedir una calibración nueva. Cascada completa: límites → calibración en
+  juego → default.
+- [ ] **R40 · Exigencia configurable.** Fracción del límite alcanzado que hay
+  que cubrir para llegar al borde de la pista (0.4–0.9, slider en
+  Configuración junto a duración y volúmenes). Es el parámetro de
+  dosificación —el que un fisio sube sesión a sesión—, así que no puede ser
+  una constante compilada. Fija dentro de la partida: si cambiara mientras
+  juega, la partida deja de ser una condición medible y "aguantó 180 s"
+  pierde sentido. La velocidad sigue rampeando como hoy; son dos ejes
+  distintos (velocidad del cambio de carga vs. amplitud del desplazamiento).
+- [ ] **R41 · Reloj común.** Pasar el instante de muestra del firmware (`m.t`)
+  dentro de `EntradaJuego`. Hoy el juego solo conoce `dt` de frame, y estampar
+  los eventos con el reloj de render le mete ±8–16 ms de jitter de vsync a
+  cada latencia. A 80 SPS el reloj del firmware da 12.5 ms de resolución.
+- [ ] **R42 · Registro de eventos del juego.** Por cada roca: instante de
+  aparición, lado que exige, instante en que entra en zona de reacción y
+  resultado (esquivó / golpeó). La zona se define por **tiempo al contacto**
+  (~1.2 s a la velocidad de ese instante), no por distancia fija: con la
+  rampa de velocidad, una distancia fija achica la ventana de reacción a lo
+  largo de la partida y contamina la latencia con la aceleración.
+- [ ] **R43 · Métricas de maniobra.** Cruzar eventos y COP para obtener, por
+  maniobra: latencia de reacción (del estímulo al primer desplazamiento ML
+  sobre umbral hacia el lado correcto), velocidad pico, amplitud alcanzada en
+  cm y en % del límite calibrado, y control direccional. Agregado por
+  partida: medianas por lado e índice de asimetría. Son las cuatro
+  dimensiones del test de límites de estabilidad, medidas decenas de veces
+  por sesión. Se descartan las maniobras que empiezan con el paciente ya en
+  movimiento, las que caen en el congelamiento por golpe, las que se solapan
+  con otra roca y las de latencia fuera de 100–1500 ms (anticipación o falta
+  de respuesta).
+- [ ] **R44 · La partida en el historial.** Guardar la sesión de juego en el
+  mismo historial, con marca de juego y fuera de los cocientes CTSIB: sus
+  métricas de bipedestación quieta no son comparables con las de un ensayo
+  estático (el área 95% durante una partida mide cuánto jugó, no cuánto
+  oscila). El informe imprime la definición de la latencia y cuántas
+  maniobras válidas hubo sobre el total, para que la métrica no sea una caja
+  negra.
+- [ ] **R45 · Sugerencia de exigencia.** Al terminar la partida, proponer el
+  valor siguiente a partir de las métricas —no del puntaje, que sube solo con
+  la velocidad—. Solo en la ventana clínica, nunca en la pantalla del
+  paciente, y solo con datos suficientes: calibración real y un mínimo de
+  maniobras válidas por lado. Se sugiere, no se aplica: si la dificultad se
+  moviera sola, dos sesiones dejarían de ser comparables y se perdería
+  justamente lo que la fase viene a ganar. Sin datos suficientes se dice por
+  qué no hay sugerencia.

@@ -5,6 +5,8 @@
 use egui::{Align2, Color32, ColorImage, Image, Key, Pos2, Rect, RichText, TextureHandle, TextureOptions, Ui, Vec2};
 use rodio::Source;
 
+use crate::rango::RangoCalibrado;
+
 const ZORRO_BYTES: &[u8] = include_bytes!("../assets/fox.png");
 const GALLINA_BYTES: &[u8] = include_bytes!("../assets/gallina.png");
 const CONEJO_BYTES: &[u8] = include_bytes!("../assets/conejo.png");
@@ -86,12 +88,16 @@ enum Fondo {
 #[derive(Clone)]
 pub struct EntradaJuego {
     pub cop_ml: f64,
-    // Libres para usar (ej. saltar/agachar con AP) o ignorar; ver src/juego.rs.
+    // Libre para usar (ej. saltar/agachar con AP) o ignorar; ver src/juego.rs.
     #[allow(dead_code)]
     pub cop_ap: f64,
-    pub ancho_cm: f64,
-    #[allow(dead_code)]
-    pub prof_cm: f64,
+    /// Hasta dónde llega el COP de esta persona. Reemplaza al semieje de la
+    /// plataforma, que no tenía nada que ver con lo que alguien puede
+    /// desplazarse: ver `src/rango.rs`.
+    pub rango: RangoCalibrado,
+    /// Qué fracción de ese alcance hay que cubrir para llegar al borde de la
+    /// pista (`rango::EXIGENCIA_DEFECTO` hasta que sea configurable).
+    pub exigencia: f64,
     pub conectado: bool,
     /// Hay alguien parado sobre la plataforma. Sin esto el juego arrancaba con
     /// solo estar conectado: el reloj corría y el zorro quedaba clavado en el
@@ -735,6 +741,10 @@ impl Partida {
 #[derive(Default)]
 pub struct EstadoJuego {
     partida: Option<Partida>,
+    /// Alcance medido del paciente. Vive acá y no en `Partida` para que
+    /// sobreviva a "Reintentar": se calibra una vez por sesión, no por
+    /// partida. Mientras esté vacío se usa el rango por defecto.
+    calibracion: Option<RangoCalibrado>,
     puntaje_maximo: f32,
     puntaje_maximo_cargado: bool,
     /// Texturas ya subidas a la GPU, una por entrada de `HOJAS`.
@@ -750,6 +760,12 @@ pub struct EstadoJuego {
 }
 
 impl EstadoJuego {
+    /// Alcance del paciente para esta sesión, o el rango poblacional
+    /// recortado a la plataforma si todavía no se calibró.
+    pub fn rango(&self, ancho_cm: f64, prof_cm: f64) -> RangoCalibrado {
+        self.calibracion.unwrap_or_else(|| RangoCalibrado::por_defecto(ancho_cm, prof_cm))
+    }
+
     /// Guarda una imagen ya decodificada en el arranque.
     pub fn recibir_imagen(&mut self, nombre: &'static str, imagen: ColorImage) {
         self.imagenes.insert(nombre, imagen);
@@ -1055,9 +1071,9 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego, escenario: &Escenar
         return sonidos;
     }
 
-    // Normaliza el COP ML al rango de la pista (-1.0 izq .. 1.0 der).
-    let mitad_ancho = (entrada.ancho_cm / 2.0).max(1.0);
-    let objetivo = ((entrada.cop_ml / mitad_ancho) as f32).clamp(-1.0, 1.0);
+    // Normaliza el COP ML al rango de la pista (-1.0 izq .. 1.0 der) usando
+    // el alcance del paciente, no el tamaño de la plataforma.
+    let objetivo = entrada.rango.ml.normalizar(entrada.cop_ml, entrada.exigencia) as f32;
     let suavizado = (dt * 10.0).min(1.0);
     partida.fox_x += (objetivo - partida.fox_x) * suavizado;
 
@@ -1586,8 +1602,8 @@ mod tests {
         EntradaJuego {
             cop_ml: 0.0,
             cop_ap: 0.0,
-            ancho_cm: 40.0,
-            prof_cm: 40.0,
+            rango: RangoCalibrado::por_defecto(40.0, 40.0),
+            exigencia: crate::rango::EXIGENCIA_DEFECTO,
             conectado: true,
             en_plataforma: true,
             dt,
@@ -1731,6 +1747,45 @@ mod tests {
         assert!(partida.fox_x <= 1.0, "el movimiento está acotado a la pista");
         let x = esc.x_zorro(partida.fox_x);
         assert!(x < esc.ancho, "el zorro no puede salirse del área de juego");
+    }
+
+    #[test]
+    fn un_desplazamiento_real_alcanza_el_borde_de_la_pista() {
+        // 5 cm de COP es un desplazamiento lateral que una persona hace de
+        // verdad. Escalado al semieje de la plataforma daba 0.25 y la roca
+        // del borde era inesquivable; contra el alcance del paciente llega.
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        let mut e = entrada(0.05);
+        e.cop_ml = 5.0;
+
+        for _ in 0..200 {
+            actualizar(&mut partida, &e, &esc);
+        }
+
+        assert!(partida.fox_x > 0.99, "debería llegar al borde, quedó en {}", partida.fox_x);
+    }
+
+    #[test]
+    fn el_reposo_del_paciente_descentrado_cae_en_el_medio_de_la_pista() {
+        // Apoya más en la derecha: su COP en reposo vive en +3 cm. Sin rango
+        // calibrado el zorro viviría corrido y pelearía contra su propio apoyo.
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        let mut e = entrada(0.05);
+        e.rango = RangoCalibrado::medido(
+            crate::rango::Eje::nuevo(3.0, -1.0, 8.0, 20.0),
+            crate::rango::Eje::nuevo(0.0, -4.0, 8.0, 20.0),
+            crate::rango::Origen::Juego,
+        )
+        .expect("calibración utilizable");
+        e.cop_ml = 3.0;
+
+        for _ in 0..200 {
+            actualizar(&mut partida, &e, &esc);
+        }
+
+        assert!(partida.fox_x.abs() < 0.01, "su reposo es el centro de la pista, quedó en {}", partida.fox_x);
     }
 
     #[test]

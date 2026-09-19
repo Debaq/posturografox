@@ -13,6 +13,7 @@ mod juego;
 mod limites;
 mod pantallas;
 mod precarga;
+mod rango;
 mod serial_link;
 mod simulador;
 mod transporte;

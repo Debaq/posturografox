@@ -28,6 +28,7 @@ use crate::informe;
 use crate::juego;
 use crate::limites;
 use crate::precarga::{Precarga, Recurso};
+use crate::rango;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 use crate::simulador::Simulador;
 use crate::transporte::Transporte;
@@ -879,8 +880,8 @@ impl PosturografoxApp {
         juego::EntradaJuego {
             cop_ml: self.ultimo_ml,
             cop_ap: self.ultimo_ap,
-            ancho_cm: self.config.ancho_cm,
-            prof_cm: self.config.prof_cm,
+            rango: self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm),
+            exigencia: rango::EXIGENCIA_DEFECTO,
             conectado: self.conexion.is_some(),
             en_plataforma: self.ocupado,
             dt: ctx.input(|i| i.stable_dt),
