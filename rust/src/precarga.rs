@@ -17,7 +17,8 @@ use egui::ColorImage;
 /// Un recurso terminado de decodificar.
 pub enum Recurso {
     Imagen(&'static str, ColorImage),
-    Audio(usize, rodio::buffer::SamplesBuffer<i16>),
+    /// Índice dentro de `juego::AUDIOS` y sus muestras ya decodificadas.
+    Audio(usize, crate::juego::Pcm),
 }
 
 /// Precarga en curso.
@@ -46,9 +47,9 @@ impl Precarga {
                     return; // la app se cerró antes de terminar
                 }
             }
-            for bytes in crate::juego::AUDIOS {
+            for (indice, bytes) in crate::juego::AUDIOS.iter().enumerate() {
                 let Some(buffer) = decodificar_audio(bytes) else { continue };
-                if tx.send(Recurso::Audio(crate::juego::clave_audio(bytes), buffer)).is_err() {
+                if tx.send(Recurso::Audio(indice, buffer)).is_err() {
                     return;
                 }
             }
@@ -87,7 +88,7 @@ impl Precarga {
 
 /// Pasa un .ogg a muestras crudas. `None` si el archivo no se puede leer: el
 /// juego funciona igual, mudo, así que no vale la pena abortar por esto.
-fn decodificar_audio(bytes: &'static [u8]) -> Option<rodio::buffer::SamplesBuffer<i16>> {
+pub fn decodificar_audio(bytes: &'static [u8]) -> Option<crate::juego::Pcm> {
     use rodio::Source;
     let decodificador = rodio::Decoder::new(std::io::Cursor::new(bytes)).ok()?;
     let canales = decodificador.channels();

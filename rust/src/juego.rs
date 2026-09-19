@@ -126,13 +126,31 @@ const SONIDO_VICTORIA: &[u8] = include_bytes!("../assets/musica/victoria.ogg");
 const SONIDO_DERROTA: &[u8] = include_bytes!("../assets/musica/derrota.ogg");
 
 /// Todo el audio del juego, para poder decodificarlo de una vez al arrancar.
+/// El índice en este arreglo es la clave del caché: antes se usaba la
+/// dirección de los bytes, que depende de que el compilador unifique cada
+/// `const` en una sola copia. Si no lo hiciera, la precarga guardaría el
+/// audio bajo una clave que el juego nunca pide y cada cambio de pista
+/// volvería a decodificar el .ogg entero (más de medio segundo de freno).
 pub const AUDIOS: [&[u8]; 7] =
     [MUSICA_MENU, MUSICA_JUGANDO, MUSICA_HALLOWEEN, SONIDO_COMER, SONIDO_CAIDA, SONIDO_VICTORIA, SONIDO_DERROTA];
 
-/// Clave con la que se guarda un audio ya decodificado.
-pub fn clave_audio(bytes: &'static [u8]) -> usize {
-    bytes.as_ptr() as usize
-}
+const A_MENU: usize = 0;
+const A_JUGANDO: usize = 1;
+const A_HALLOWEEN: usize = 2;
+const A_COMER: usize = 3;
+const A_CAIDA: usize = 4;
+const A_VICTORIA: usize = 5;
+const A_DERROTA: usize = 6;
+
+/// Muestras crudas de un .ogg ya decodificado.
+pub type Pcm = rodio::buffer::SamplesBuffer<i16>;
+/// Fuente lista para reproducir. `Buffered` comparte las muestras por `Arc`,
+/// así que clonarla cuesta un puntero: reproducir la misma pista de nuevo
+/// no vuelve a copiar los ~20 MB de muestras.
+type Fuente = rodio::source::Buffered<Pcm>;
+
+/// Segundos que dura el cruce entre la pista que sale y la que entra.
+const CRUCE_S: f32 = 0.8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pista {
@@ -141,20 +159,90 @@ enum Pista {
     Halloween,
 }
 
+impl Pista {
+    fn indice(self) -> usize {
+        match self {
+            Pista::Menu => A_MENU,
+            Pista::Jugando => A_JUGANDO,
+            Pista::Halloween => A_HALLOWEEN,
+        }
+    }
+}
+
+/// Repite una fuente ya decodificada sin volver a copiarla: al terminar
+/// vuelve a empezar clonando el `Buffered`, que es clonar un `Arc`.
+///
+/// `Source::repeat_infinite` de rodio hace lo mismo pero bufferea otra vez la
+/// fuente, o sea que cada `Sink` se queda con su propia copia de la pista y la
+/// va copiando desde el hilo de audio mientras suena.
+struct Bucle {
+    inicio: Fuente,
+    actual: Fuente,
+}
+
+impl Bucle {
+    fn nuevo(fuente: Fuente) -> Self {
+        Self { actual: fuente.clone(), inicio: fuente }
+    }
+}
+
+impl Iterator for Bucle {
+    type Item = i16;
+
+    #[inline]
+    fn next(&mut self) -> Option<i16> {
+        if let Some(muestra) = self.actual.next() {
+            return Some(muestra);
+        }
+        self.actual = self.inicio.clone();
+        self.actual.next()
+    }
+}
+
+impl Source for Bucle {
+    #[inline]
+    fn current_frame_len(&self) -> Option<usize> {
+        match self.actual.current_frame_len() {
+            Some(0) => self.inicio.current_frame_len(),
+            otro => otro,
+        }
+    }
+
+    #[inline]
+    fn channels(&self) -> u16 {
+        self.inicio.channels()
+    }
+
+    #[inline]
+    fn sample_rate(&self) -> u32 {
+        self.inicio.sample_rate()
+    }
+
+    #[inline]
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        None // no termina nunca
+    }
+}
+
 /// Sale del audio del juego. Si no hay dispositivo de sonido disponible
 /// (`Audio::nueva()` devuelve `None`), el juego sigue andando mudo.
 struct Audio {
     _flujo: rodio::OutputStream, // hay que mantenerlo vivo o se corta el sonido
     salida: rodio::OutputStreamHandle,
     musica: Option<rodio::Sink>,
+    /// Pista anterior mientras se apaga: el corte seco se escuchaba como un
+    /// tropezón justo en el cambio de tramo.
+    saliente: Option<rodio::Sink>,
+    /// Avance del cruce, 0.0 recién cambiada y 1.0 ya del todo en la nueva.
+    cruce: f32,
     pista_actual: Option<Pista>,
     // Volúmenes vigentes, sincronizados cada frame con la configuración.
     volumen_musica: f32,
     volumen_efectos: f32,
-    /// Audio ya decodificado, indexado por la dirección de sus bytes. Decodificar
-    /// un .ogg entero cada vez que hay que repetirlo (o cada vez que suena un
-    /// efecto) es caro y se notaba como tironeo en el juego.
-    decodificados: std::collections::HashMap<usize, rodio::buffer::SamplesBuffer<i16>>,
+    /// Audio ya decodificado, indexado igual que `AUDIOS`. Decodificar un .ogg
+    /// entero cada vez que hay que repetirlo (o cada vez que suena un efecto)
+    /// es caro y se notaba como tironeo en el juego.
+    decodificados: [Option<Fuente>; AUDIOS.len()],
 }
 
 impl Audio {
@@ -164,33 +252,31 @@ impl Audio {
             _flujo: flujo,
             salida,
             musica: None,
+            saliente: None,
+            cruce: 1.0,
             pista_actual: None,
             volumen_musica: crate::config::defecto::VOLUMEN_MUSICA,
             volumen_efectos: crate::config::defecto::VOLUMEN_EFECTOS,
-            decodificados: std::collections::HashMap::new(),
+            decodificados: std::array::from_fn(|_| None),
         })
     }
 
     /// Guarda un audio ya decodificado (viene de la precarga del arranque).
-    fn sembrar(&mut self, clave: usize, buffer: rodio::buffer::SamplesBuffer<i16>) {
-        self.decodificados.insert(clave, buffer);
+    fn sembrar(&mut self, clave: usize, buffer: Pcm) {
+        if let Some(hueco) = self.decodificados.get_mut(clave) {
+            *hueco = Some(buffer.buffered());
+        }
     }
 
-    /// Decodifica una vez y guarda el resultado. `SamplesBuffer` sí es `Clone`,
-    /// así que a partir de acá reproducir o repetir el audio es copiar memoria,
-    /// sin volver a pasar por el decodificador de Vorbis.
-    fn buffer_de(&mut self, bytes: &'static [u8]) -> Option<rodio::buffer::SamplesBuffer<i16>> {
-        let clave = clave_audio(bytes);
-        if let Some(buffer) = self.decodificados.get(&clave) {
-            return Some(buffer.clone());
+    /// Devuelve la fuente del audio `clave`, decodificándola si la precarga no
+    /// llegó a dejarla (no debería pasar: el splash espera a que termine).
+    fn fuente_de(&mut self, clave: usize) -> Option<Fuente> {
+        if let Some(fuente) = self.decodificados.get(clave)?.as_ref() {
+            return Some(fuente.clone());
         }
-        let decodificador = rodio::Decoder::new(std::io::Cursor::new(bytes)).ok()?;
-        let canales = decodificador.channels();
-        let tasa = decodificador.sample_rate();
-        let muestras: Vec<i16> = decodificador.collect();
-        let buffer = rodio::buffer::SamplesBuffer::new(canales, tasa, muestras);
-        self.decodificados.insert(clave, buffer.clone());
-        Some(buffer)
+        let fuente = crate::precarga::decodificar_audio(AUDIOS[clave])?.buffered();
+        self.decodificados[clave] = Some(fuente.clone());
+        Some(fuente)
     }
 
     /// Toma los volúmenes de la configuración y los aplica también a la
@@ -198,43 +284,62 @@ impl Audio {
     fn ajustar_volumenes(&mut self, musica: f32, efectos: f32) {
         self.volumen_musica = musica.clamp(0.0, 1.0);
         self.volumen_efectos = efectos.clamp(0.0, 1.0);
+        self.aplicar_volumen_musica();
+    }
+
+    fn aplicar_volumen_musica(&mut self) {
         if let Some(sink) = &self.musica {
-            sink.set_volume(self.volumen_musica);
+            sink.set_volume(self.volumen_musica * self.cruce);
+        }
+        if let Some(sink) = &self.saliente {
+            sink.set_volume(self.volumen_musica * (1.0 - self.cruce));
         }
     }
 
-    fn bytes_de(pista: Pista) -> &'static [u8] {
-        match pista {
-            Pista::Menu => MUSICA_MENU,
-            Pista::Jugando => MUSICA_JUGANDO,
-            Pista::Halloween => MUSICA_HALLOWEEN,
-        }
-    }
-
-    /// Pone a sonar `pista` en loop si no es ya la que está sonando. El loop
-    /// lo maneja rodio (`repeat_infinite`), así que no hay que estar
-    /// vigilando cada frame si la pista terminó para volver a ponerla.
-    fn poner_pista(&mut self, pista: Pista) {
-        if self.pista_actual == Some(pista) && self.musica.as_ref().is_some_and(|s| !s.empty()) {
+    /// Avanza el cruce entre pistas. Se llama una vez por frame con el `dt`
+    /// del juego; cuando no hay cambio en curso no hace nada.
+    fn avanzar(&mut self, dt: f32) {
+        if self.cruce >= 1.0 {
             return;
         }
-        let Some(fuente) = self.buffer_de(Self::bytes_de(pista)) else { return };
-        if let Ok(sink) = rodio::Sink::try_new(&self.salida) {
-            sink.set_volume(self.volumen_musica);
-            sink.append(fuente.repeat_infinite());
-            self.musica = Some(sink); // dropea el sink anterior, que corta esa pista solo
-            self.pista_actual = Some(pista);
+        self.cruce = (self.cruce + dt / CRUCE_S).min(1.0);
+        self.aplicar_volumen_musica();
+        if self.cruce >= 1.0 {
+            self.saliente = None; // ya está muda: dropearla corta el sonido sin que se note
         }
+    }
+
+    /// Pone a sonar `pista` en loop si no es ya la que está sonando, cruzándola
+    /// con la que venía. El loop lo maneja `Bucle`, así que no hay que estar
+    /// vigilando cada frame si la pista terminó para volver a ponerla.
+    fn poner_pista(&mut self, pista: Pista) {
+        if self.pista_actual == Some(pista) && self.musica.is_some() {
+            return;
+        }
+        let Some(fuente) = self.fuente_de(pista.indice()) else { return };
+        let Ok(sink) = rodio::Sink::try_new(&self.salida) else { return };
+        let venia_sonando = self.musica.is_some();
+        sink.set_volume(if venia_sonando { 0.0 } else { self.volumen_musica });
+        sink.append(Bucle::nuevo(fuente));
+        let anterior = self.musica.replace(sink);
+        self.pista_actual = Some(pista);
+        // Solo se cruza con la última que quedó sonando: si llega otro cambio
+        // con el cruce a medias, la de más atrás ya está casi muda.
+        self.saliente = anterior;
+        self.cruce = if venia_sonando { 0.0 } else { 1.0 };
+        self.aplicar_volumen_musica();
     }
 
     fn detener_musica(&mut self) {
         self.musica = None; // dropear el sink corta el sonido
+        self.saliente = None;
+        self.cruce = 1.0;
         self.pista_actual = None;
     }
 
     /// Sonido suelto (no-loop) que se reproduce solo y se limpia sola.
-    fn reproducir_efecto(&mut self, bytes: &'static [u8]) {
-        let Some(fuente) = self.buffer_de(bytes) else { return };
+    fn reproducir_efecto(&mut self, clave: usize) {
+        let Some(fuente) = self.fuente_de(clave) else { return };
         if let Ok(sink) = rodio::Sink::try_new(&self.salida) {
             sink.set_volume(self.volumen_efectos);
             sink.append(fuente);
@@ -248,7 +353,7 @@ impl Audio {
 fn obtener_audio<'a>(
     cache: &'a mut Option<Audio>,
     intentado: &mut bool,
-    precargado: &mut Vec<(usize, rodio::buffer::SamplesBuffer<i16>)>,
+    precargado: &mut Vec<(usize, Pcm)>,
 ) -> Option<&'a mut Audio> {
     if !*intentado {
         *cache = Audio::nueva();
@@ -591,7 +696,7 @@ pub struct EstadoJuego {
     imagenes: std::collections::HashMap<&'static str, ColorImage>,
     /// Audio ya decodificado por la precarga, para sembrar el caché de `Audio`
     /// apenas exista el dispositivo de sonido.
-    audio_precargado: Vec<(usize, rodio::buffer::SamplesBuffer<i16>)>,
+    audio_precargado: Vec<(usize, Pcm)>,
     audio: Option<Audio>,
     audio_intentado: bool,
 }
@@ -603,7 +708,7 @@ impl EstadoJuego {
     }
 
     /// Guarda un audio ya decodificado en el arranque.
-    pub fn recibir_audio(&mut self, clave: usize, buffer: rodio::buffer::SamplesBuffer<i16>) {
+    pub fn recibir_audio(&mut self, clave: usize, buffer: Pcm) {
         self.audio_precargado.push((clave, buffer));
     }
 }
@@ -637,6 +742,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     let mut audio = obtener_audio(&mut estado.audio, &mut estado.audio_intentado, &mut estado.audio_precargado);
     if let Some(audio) = audio.as_deref_mut() {
         audio.ajustar_volumenes(entrada.volumen_musica, entrada.volumen_efectos);
+        audio.avanzar(entrada.dt.clamp(0.0, 0.1)); // cruce entre pistas, si hay uno en curso
     }
 
     if !entrada.conectado || !entrada.en_plataforma {
@@ -661,7 +767,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 
     if partida.game_over {
         if let Some(audio) = audio.as_deref_mut() {
-            repetir_sonido_fin(audio, partida, SONIDO_DERROTA, entrada.dt.clamp(0.0, 0.1));
+            repetir_sonido_fin(audio, partida, A_DERROTA, entrada.dt.clamp(0.0, 0.1));
         }
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_game_over(
@@ -701,15 +807,15 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     for sonido in actualizar(partida, &entrada, &escenario) {
         if let Some(audio) = audio.as_deref_mut() {
             audio.reproducir_efecto(match sonido {
-                Sonido::Golpe => SONIDO_CAIDA,
-                Sonido::Comer => SONIDO_COMER,
+                Sonido::Golpe => A_CAIDA,
+                Sonido::Comer => A_COMER,
             });
         }
     }
 
     if partida.gano {
         if let Some(audio) = audio.as_deref_mut() {
-            repetir_sonido_fin(audio, partida, SONIDO_VICTORIA, entrada.dt.clamp(0.0, 0.1));
+            repetir_sonido_fin(audio, partida, A_VICTORIA, entrada.dt.clamp(0.0, 0.1));
         }
         if partida.puntaje > estado.puntaje_maximo {
             estado.puntaje_maximo = partida.puntaje;
@@ -747,7 +853,7 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 /// Corta la música de fondo (solo la primera vez) y hace sonar `sonido`
 /// hasta REPETICIONES_SONIDO_FIN veces, separadas por INTERVALO_SONIDO_FIN
 /// segundos, mientras dura la pantalla de game over o victoria.
-fn repetir_sonido_fin(audio: &mut Audio, partida: &mut Partida, sonido: &'static [u8], dt: f32) {
+fn repetir_sonido_fin(audio: &mut Audio, partida: &mut Partida, sonido: usize, dt: f32) {
     if partida.repeticiones_sonido_fin == 0 {
         audio.detener_musica();
     }
@@ -1521,5 +1627,44 @@ mod tests {
         assert!(partida.fox_x <= 1.0, "el movimiento está acotado a la pista");
         let x = esc.x_zorro(partida.fox_x);
         assert!(x < esc.ancho, "el zorro no puede salirse del área de juego");
+    }
+
+    #[test]
+    fn el_bucle_repite_la_fuente_sin_cortes() {
+        let pcm = Pcm::new(2, 44_100, vec![1i16, 2, 3, 4]);
+        let bucle = Bucle::nuevo(pcm.buffered());
+        assert_eq!(bucle.channels(), 2);
+        assert_eq!(bucle.sample_rate(), 44_100);
+        assert_eq!(bucle.total_duration(), None, "la música de fondo no termina");
+        let muestras: Vec<i16> = bucle.take(10).collect();
+        assert_eq!(muestras, vec![1, 2, 3, 4, 1, 2, 3, 4, 1, 2]);
+    }
+
+    #[test]
+    fn el_bucle_no_duplica_las_muestras_en_memoria() {
+        // Clonar la fuente tiene que ser clonar un `Arc`: si volviera a copiar
+        // las muestras, cada cambio de pista frenaría el frame (~20 MB de copia).
+        let fuente = Pcm::new(1, 8_000, vec![0i16; 1_000_000]).buffered();
+        let antes = std::time::Instant::now();
+        let clones: Vec<_> = (0..1_000).map(|_| fuente.clone()).collect();
+        assert_eq!(clones.len(), 1_000);
+        assert!(antes.elapsed() < std::time::Duration::from_millis(50), "clonar la fuente está copiando datos");
+    }
+
+    #[test]
+    fn cada_indice_de_audio_apunta_a_su_archivo() {
+        // Es la clave con la que la precarga siembra el caché: si se corren,
+        // el juego pide una pista y suena otra (o la decodifica de nuevo).
+        for (indice, esperado) in [
+            (A_MENU, MUSICA_MENU),
+            (A_JUGANDO, MUSICA_JUGANDO),
+            (A_HALLOWEEN, MUSICA_HALLOWEEN),
+            (A_COMER, SONIDO_COMER),
+            (A_CAIDA, SONIDO_CAIDA),
+            (A_VICTORIA, SONIDO_VICTORIA),
+            (A_DERROTA, SONIDO_DERROTA),
+        ] {
+            assert_eq!(AUDIOS[indice].len(), esperado.len(), "AUDIOS[{indice}] no es el archivo esperado");
+        }
     }
 }
