@@ -74,16 +74,24 @@ jobs:
 
       # Instalador y no el .exe suelto: el .exe no deja acceso directo, no se
       # desinstala y no se puede volver atrás sin adivinar qué archivo era.
+      # En PowerShell y no en bash: Git Bash traduce cualquier argumento que
+      # empiece con "/" a una ruta de Windows, así que /DMiVersion=... llegaba
+      # como C:/Program Files/Git/DMiVersion=... e ISCC respondía "You may not
+      # specify more than one script filename".
       - name: Empaquetar instalador (Windows)
         if: matrix.platform == 'windows'
-        shell: bash
+        shell: pwsh
         run: |
-          choco install innosetup -y --no-progress
-          cp rust/target/release/posturografox.exe out/posturografox.exe
-          VERSION="$(grep '^version' rust/Cargo.toml | head -1 | cut -d'"' -f2)"
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
-            "/DMiVersion=$VERSION" "packaging/windows/posturografox.iss"
-          rm out/posturografox.exe
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          # La imagen del runner ya trae Inno Setup; choco queda solo por si un
+          # día deja de traerlo.
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          Copy-Item rust\target\release\posturografox.exe out\posturografox.exe
+          $version = (Select-String -Path rust\Cargo.toml -Pattern '^version = "(.+)"' |
+                      Select-Object -First 1).Matches[0].Groups[1].Value
+          & $iscc "/DMiVersion=$version" packaging\windows\posturografox.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC falló con $LASTEXITCODE" }
+          Remove-Item out\posturografox.exe
 
       - uses: actions/upload-artifact@v4
         with:
