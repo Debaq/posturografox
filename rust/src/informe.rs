@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::datos::carpeta_datos;
 use crate::estabilometria::{Condicion, MetricasBalance, Superficie, ajustar_elipse95};
+use crate::historial::DatosJuego;
 
 /// Todo lo que entra en el informe.
 pub struct DatosInforme<'a> {
@@ -24,6 +25,8 @@ pub struct DatosInforme<'a> {
     pub registro: &'a [[f64; 3]],
     /// Cocientes del CTSIB ya calculados, como (nombre, valor).
     pub cocientes: &'a [(String, f64)],
+    /// Última partida del modo juego, si hubo una en esta sesión.
+    pub juego: Option<&'a DatosJuego>,
     pub version: &'a str,
 }
 
@@ -113,6 +116,7 @@ pub fn generar_html(datos: &DatosInforme) -> String {
     ]
     .join("\n      ");
 
+    let juego = datos.juego.map(bloque_juego).unwrap_or_default();
     let cocientes = if datos.cocientes.is_empty() {
         String::new()
     } else {
@@ -166,6 +170,8 @@ pub fn generar_html(datos: &DatosInforme) -> String {
 
   {cocientes}
 
+  {juego}
+
   <footer>Generado por Posturografox {version}. Los valores dependen de la calibración
   de la plataforma; interpretar junto al resto de la evaluación clínica.</footer>
 </body>
@@ -182,6 +188,75 @@ pub fn generar_html(datos: &DatosInforme) -> String {
         .join("\n      "),
         svg = svg_trazo(datos),
         version = escapar(datos.version),
+    )
+}
+
+/// Sección del modo juego. Imprime la definición de la latencia y cuántas
+/// maniobras válidas hubo sobre el total: sin eso la cifra sería una caja
+/// negra, y quien lea el informe no puede saber si hablan de tres maniobras
+/// o de cuarenta.
+fn bloque_juego(juego: &DatosJuego) -> String {
+    let mut filas = vec![
+        fila("Duración de la partida", format!("{:.0} s", juego.duracion_s)),
+        fila("Resultado", if juego.gano { "completó el tiempo".into() } else { "terminó antes".to_string() }),
+        fila("Exigencia", format!("{:.0}% del alcance", juego.exigencia * 100.0)),
+        fila(
+            "Alcance usado",
+            format!(
+                "ML {:.1}/{:.1} cm · AP {:.1}/{:.1} cm ({})",
+                juego.rango.ml.alcance_negativo_cm(),
+                juego.rango.ml.alcance_positivo_cm(),
+                juego.rango.ap.alcance_negativo_cm(),
+                juego.rango.ap.alcance_positivo_cm(),
+                juego.rango.origen.etiqueta()
+            ),
+        ),
+    ];
+    let nota = match &juego.resumen {
+        None => {
+            filas.push(fila("Maniobras medibles", "ninguna".to_string()));
+            "No quedaron maniobras comparables: se descartan las rocas que no exigían desplazamiento, \
+             las que caen en un congelamiento por golpe, las que se solapan con otra y las respuestas \
+             fuera de la ventana plausible de reacción."
+                .to_string()
+        }
+        Some(r) => {
+            filas.push(fila("Maniobras válidas", format!("{} de {}", r.validas, r.total)));
+            filas.push(fila(
+                "Latencia mediana izq / der",
+                format!(
+                    "{:.0} / {:.0} ms ({} / {} maniobras)",
+                    r.latencia_mediana_izq_s * 1000.0,
+                    r.latencia_mediana_der_s * 1000.0,
+                    r.validas_izquierda,
+                    r.validas_derecha
+                ),
+            ));
+            filas.push(fila(
+                "Velocidad pico mediana izq / der",
+                format!("{:.1} / {:.1} cm/s", r.velocidad_pico_mediana_izq_cms, r.velocidad_pico_mediana_der_cms),
+            ));
+            filas.push(fila(
+                "Amplitud mediana izq / der",
+                format!(
+                    "{:.0}% / {:.0}% del alcance propio",
+                    r.fraccion_alcance_mediana_izq * 100.0,
+                    r.fraccion_alcance_mediana_der * 100.0
+                ),
+            ));
+            filas.push(fila("Asimetría", format!("{:+.2}", r.asimetria)));
+            filas.push(fila("Control direccional", format!("{:.0}%", r.control_direccional * 100.0)));
+            "Latencia: desde que el obstáculo entra a 1.2 s del contacto hasta el primer desplazamiento \
+             medio-lateral sobre el umbral de velocidad, haya salido hacia donde haya salido; el acierto \
+             de dirección se informa aparte. La amplitud se expresa como fracción del alcance calibrado \
+             del paciente, que es lo que la vuelve comparable entre sesiones."
+                .to_string()
+        }
+    };
+    format!(
+        "<h2>Modo juego</h2>\n    <table>\n      {}\n    </table>\n    <p class=\"sub\">{}</p>",
+        filas.join("\n      "),
+        escapar(&nota)
     )
 }
 
@@ -224,6 +299,7 @@ mod tests {
             metricas,
             registro,
             cocientes,
+            juego: None,
             version: "0.1.0",
         }
     }
@@ -262,6 +338,60 @@ mod tests {
         let registro = registro_de_prueba();
         let html = generar_html(&datos_de_prueba("   ", &metricas, &registro, &[]));
         assert!(html.contains("Sin identificar"));
+    }
+
+    fn partida_de_prueba(resumen: Option<crate::maniobras::Resumen>) -> DatosJuego {
+        DatosJuego {
+            rango: crate::rango::RangoCalibrado::por_defecto(40.0, 40.0),
+            exigencia: 0.7,
+            duracion_s: 120.0,
+            gano: true,
+            resumen,
+        }
+    }
+
+    #[test]
+    fn el_informe_de_una_partida_dice_como_se_mide_la_latencia() {
+        let metricas = MetricasBalance::default();
+        let registro: Vec<[f64; 3]> = Vec::new();
+        let cocientes: Vec<(String, f64)> = Vec::new();
+        let partida = partida_de_prueba(Some(crate::maniobras::Resumen {
+            validas: 34,
+            total: 41,
+            validas_izquierda: 17,
+            validas_derecha: 17,
+            latencia_mediana_izq_s: 0.31,
+            latencia_mediana_der_s: 0.28,
+            velocidad_pico_mediana_izq_cms: 8.0,
+            velocidad_pico_mediana_der_cms: 9.0,
+            fraccion_alcance_mediana_izq: 0.6,
+            fraccion_alcance_mediana_der: 0.7,
+            asimetria: 0.08,
+            control_direccional: 0.9,
+        }));
+        let mut datos = datos_de_prueba("ID-1", &metricas, &registro, &cocientes);
+        datos.juego = Some(&partida);
+
+        let html = generar_html(&datos);
+
+        assert!(html.contains("Modo juego"));
+        assert!(html.contains("34 de 41"), "hay que decir cuántas maniobras válidas sobre el total");
+        assert!(html.contains("1.2 s del contacto"), "la definición de la latencia tiene que estar escrita");
+    }
+
+    #[test]
+    fn una_partida_sin_maniobras_medibles_lo_dice() {
+        let metricas = MetricasBalance::default();
+        let registro: Vec<[f64; 3]> = Vec::new();
+        let cocientes: Vec<(String, f64)> = Vec::new();
+        let partida = partida_de_prueba(None);
+        let mut datos = datos_de_prueba("ID-1", &metricas, &registro, &cocientes);
+        datos.juego = Some(&partida);
+
+        let html = generar_html(&datos);
+
+        assert!(html.contains("ninguna"));
+        assert!(!html.contains("Latencia mediana"), "sin datos no se inventa una cifra");
     }
 
     #[test]

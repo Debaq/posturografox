@@ -12,10 +12,6 @@
 //! control direccional—, medidas decenas de veces por partida en vez de las
 //! ocho del examen guiado.
 
-// Todo el módulo lo consume el archivo de la partida y el informe (R44); el
-// permiso se saca en ese commit.
-#![allow(dead_code)]
-
 use crate::juego::EventoRoca;
 use crate::rango::RangoCalibrado;
 
@@ -79,7 +75,7 @@ pub struct Maniobra {
 }
 
 /// Lo que se puede decir de una partida entera.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Resumen {
     pub validas: usize,
     pub total: usize,

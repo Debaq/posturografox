@@ -27,6 +27,7 @@ use crate::historial;
 use crate::informe;
 use crate::juego;
 use crate::limites;
+use crate::maniobras;
 use crate::precarga::{Precarga, Recurso};
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 use crate::simulador::Simulador;
@@ -449,6 +450,13 @@ pub struct PosturografoxApp {
     trazo_y: VecDeque<f64>,
     ultimo_ml: f64,
     ultimo_ap: f64,
+    /// COP grabado mientras el modo juego está abierto. Va aparte de
+    /// `sesion_actual` porque el ensayo clínico tiene su propia duración fija
+    /// y su descarte de acomodación: una partida de tres minutos quedaría
+    /// cortada a los treinta segundos.
+    registro_juego: Vec<[f64; 3]>,
+    /// Datos de la última partida archivada, para el informe.
+    ultima_partida: Option<historial::DatosJuego>,
     /// Marca de tiempo de la última muestra, en el reloj del firmware. Es el
     /// reloj con el que hay que estampar lo que se mida: el de los frames
     /// depende del vsync.
@@ -564,6 +572,8 @@ impl Default for PosturografoxApp {
             trazo_y: VecDeque::with_capacity(MAX_PUNTOS_TRAZO),
             config,
             ultimo_ml: 0.0,
+            registro_juego: Vec::new(),
+            ultima_partida: None,
             ultimo_t: 0.0,
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
@@ -872,6 +882,9 @@ impl PosturografoxApp {
                 }
             }
         }
+        if self.modo_juego && self.ocupado {
+            self.registro_juego.push([m.t, cop_ml, cop_ap]);
+        }
         self.ultimo_ml = cop_ml;
         self.ultimo_ap = cop_ap;
         self.ultimo_t = m.t;
@@ -901,6 +914,51 @@ impl PosturografoxApp {
         }
     }
 
+    /// Archiva la partida que acaba de terminar: el tramo de COP que le
+    /// corresponde, las maniobras que exigió y con qué rango se jugó.
+    ///
+    /// Va al mismo historial que los ensayos, marcada como juego. Sus
+    /// métricas de bipedestación no son comparables con las de un ensayo
+    /// estático —durante una partida el paciente se desplaza a propósito—,
+    /// así que se listan aparte y no entran ni en la evolución ni en los
+    /// cocientes del CTSIB.
+    fn archivar_partida(&mut self) {
+        let Some(resultado) = self.estado_juego.tomar_resultado() else { return };
+        let rango = self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm);
+        let tramo: Vec<[f64; 3]> = self
+            .registro_juego
+            .iter()
+            .copied()
+            .filter(|m| m[0] >= resultado.t_inicio_s && m[0] <= resultado.t_fin_s)
+            .collect();
+        let tramo = if self.config.filtrar_cop {
+            // Filtro de fase cero: limpia el ruido del ADC sin correr los
+            // tiempos, que es justo lo que se está midiendo.
+            filtrar_registro(&tramo, self.config.filtro_corte_hz)
+        } else {
+            tramo
+        };
+        let Some(metricas) = calcular_metricas(&tramo) else {
+            self.estado = "La partida terminó sin registro suficiente para archivar".to_string();
+            return;
+        };
+        let medidas = maniobras::analizar(&resultado.eventos, &tramo, &rango);
+        let juego = historial::DatosJuego {
+            rango,
+            exigencia: self.config.exigencia_juego,
+            duracion_s: resultado.t_fin_s - resultado.t_inicio_s,
+            gano: resultado.gano,
+            resumen: maniobras::resumir(&medidas),
+        };
+        self.ultima_partida = Some(juego.clone());
+        let sesion = historial::Sesion::de_juego(&self.paciente, self.superficie, metricas, juego);
+        match historial::agregar(&sesion) {
+            Ok(()) => self.historial.push(sesion),
+            Err(e) => self.estado = format!("No se pudo archivar la partida: {e}"),
+        }
+        self.registro_juego.retain(|m| m[0] > resultado.t_fin_s);
+    }
+
     /// Pide arrancar directamente en el modo juego (opción `--juego`).
     pub fn empezar_en_modo_juego(&mut self) {
         self.juego_al_arrancar = true;
@@ -910,6 +968,7 @@ impl PosturografoxApp {
     /// está usando el evaluador y esta ventana sigue mostrando las métricas.
     fn abrir_juego(&mut self, ctx: &egui::Context) {
         self.modo_juego = true;
+        self.registro_juego.clear();
         self.pantallas.refrescar();
         self.pantalla_juego = if self.pantallas.hay_varias() {
             let esquina = ctx.input(|i| i.viewport().outer_rect.map(|r| [r.min.x, r.min.y]));
@@ -979,6 +1038,7 @@ impl PosturografoxApp {
         if cerrar {
             self.cerrar_juego();
         }
+        self.archivar_partida();
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 
@@ -1763,13 +1823,18 @@ impl PosturografoxApp {
                 return;
             }
 
-            ui.label(format!("{} sesiones archivadas", sesiones.len()));
+            let partidas = sesiones.iter().filter(|s| s.es_juego()).count();
+            ui.label(format!("{} sesiones archivadas ({partidas} del modo juego)", sesiones.len()));
             ui.add_space(6.0);
 
             // Evolución: de la más vieja a la más nueva, por número de sesión.
+            // Las partidas quedan fuera: durante el juego el paciente se
+            // desplaza a propósito, así que su área 95% y su velocidad media
+            // no miden lo mismo que en un ensayo quieto y el gráfico daría
+            // saltos que no son cambios del paciente.
             let mut area: Vec<[f64; 2]> = Vec::new();
             let mut velocidad: Vec<[f64; 2]> = Vec::new();
-            for (i, s) in sesiones.iter().rev().enumerate() {
+            for (i, s) in sesiones.iter().rev().filter(|s| !s.es_juego()).enumerate() {
                 area.push([i as f64 + 1.0, s.metricas.area95_cm2]);
                 velocidad.push([i as f64 + 1.0, s.metricas.velocidad_media_cms]);
             }
@@ -1781,6 +1846,15 @@ impl PosturografoxApp {
             ui.add_space(6.0);
             egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                 for s in &sesiones {
+                    if let Some(juego) = &s.juego {
+                        ui.label(format!(
+                            "{} · 🎮 {} · {}",
+                            fecha_legible(s.epoch_s),
+                            s.etiqueta(),
+                            resumen_partida(juego)
+                        ));
+                        continue;
+                    }
                     ui.label(format!(
                         "{} · {} · área {:.1} cm² · vel {:.2} cm/s · {:.0} s",
                         fecha_legible(s.epoch_s),
@@ -1871,6 +1945,7 @@ impl PosturografoxApp {
             metricas: &metricas,
             registro: &self.ultimo_registro,
             cocientes: &cocientes,
+            juego: self.ultima_partida.as_ref(),
             version: VERSION,
         };
         match informe::escribir(&datos) {
@@ -2176,6 +2251,7 @@ impl eframe::App for PosturografoxApp {
                         self.modo_juego = false;
                     }
                 });
+                self.archivar_partida();
                 ui.ctx().request_repaint_after(Duration::from_millis(16));
                 return;
             }
@@ -2258,6 +2334,30 @@ impl eframe::App for PosturografoxApp {
         };
         ui.ctx().request_repaint_after(espera);
     }
+}
+
+/// Una línea con lo que dejó una partida, para el listado del historial.
+fn resumen_partida(juego: &historial::DatosJuego) -> String {
+    let cabecera = format!(
+        "{:.0} s · exigencia {:.0}% · {}",
+        juego.duracion_s,
+        juego.exigencia * 100.0,
+        juego.rango.origen.etiqueta()
+    );
+    // Sin maniobras medibles se dice eso y no un número inventado: una
+    // partida puede terminar sin que ninguna roca haya exigido una respuesta
+    // limpia.
+    let Some(r) = &juego.resumen else {
+        return format!("{cabecera} · sin maniobras medibles");
+    };
+    format!(
+        "{cabecera} · {}/{} maniobras · latencia {:.0}/{:.0} ms izq/der · asimetría {:+.2}",
+        r.validas,
+        r.total,
+        r.latencia_mediana_izq_s * 1000.0,
+        r.latencia_mediana_der_s * 1000.0,
+        r.asimetria
+    )
 }
 
 /// Avanza la mudanza del juego de un monitor a otro: sale de pantalla

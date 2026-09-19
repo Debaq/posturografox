@@ -193,7 +193,7 @@ ejercicio de límites.
   movimiento, las que caen en el congelamiento por golpe, las que se solapan
   con otra roca y las de latencia fuera de 100–1500 ms (anticipación o falta
   de respuesta).
-- [ ] **R44 · La partida en el historial.** Guardar la sesión de juego en el
+- [x] **R44 · La partida en el historial.** Guardar la sesión de juego en el
   mismo historial, con marca de juego y fuera de los cocientes CTSIB: sus
   métricas de bipedestación quieta no son comparables con las de un ensayo
   estático (el área 95% durante una partida mide cuánto jugó, no cuánto

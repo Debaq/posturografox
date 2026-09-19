@@ -16,8 +16,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::datos::carpeta_datos;
 use crate::estabilometria::{Condicion, MetricasBalance, Superficie};
+use crate::maniobras::Resumen;
+use crate::rango::RangoCalibrado;
 
 const ARCHIVO: &str = "historial.ronl";
+
+/// Lo que deja una partida del modo juego, además de las métricas comunes.
+///
+/// Va junto a la sesión y no en lugar de ella porque durante la partida se
+/// graba el mismo COP que en cualquier ensayo; lo que cambia es que además
+/// hubo estímulos con dirección y momento conocidos.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DatosJuego {
+    /// Alcance con el que se jugó, y de dónde salió. Sin esto el resto de las
+    /// cifras no se puede interpretar.
+    pub rango: RangoCalibrado,
+    /// Fracción del alcance que había que cubrir para llegar al borde de la
+    /// pista: la dosis del ejercicio.
+    pub exigencia: f64,
+    pub duracion_s: f64,
+    pub gano: bool,
+    /// Medianas por lado, asimetría y control direccional. `None` si no quedó
+    /// ninguna maniobra medible.
+    pub resumen: Option<Resumen>,
+}
 
 /// Una sesión cerrada, tal como queda archivada.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -28,6 +50,16 @@ pub struct Sesion {
     pub superficie: Superficie,
     pub condicion: Condicion,
     pub metricas: MetricasBalance,
+    /// Presente solo si la sesión fue una partida del modo juego. Las
+    /// métricas de bipedestación quieta de una partida no son comparables con
+    /// las de un ensayo estático —el área 95% de una partida mide cuánto se
+    /// movió jugando, no cuánto oscila—, así que las sesiones de juego se
+    /// listan aparte y no entran en la evolución.
+    ///
+    /// `serde(default)` para que un historial escrito antes de que esto
+    /// existiera siga cargando.
+    #[serde(default)]
+    pub juego: Option<DatosJuego>,
 }
 
 impl Sesion {
@@ -38,11 +70,24 @@ impl Sesion {
             superficie,
             condicion,
             metricas,
+            juego: None,
         }
+    }
+
+    /// Una partida del modo juego archivada.
+    pub fn de_juego(paciente: &str, superficie: Superficie, metricas: MetricasBalance, juego: DatosJuego) -> Self {
+        Self { juego: Some(juego), ..Self::nueva(paciente, superficie, Condicion::OjosAbiertos, metricas) }
+    }
+
+    pub fn es_juego(&self) -> bool {
+        self.juego.is_some()
     }
 
     /// Etiqueta corta para listarla.
     pub fn etiqueta(&self) -> String {
+        if self.es_juego() {
+            return format!("{} + juego", self.superficie.etiqueta());
+        }
         format!("{} + {}", self.superficie.etiqueta(), self.condicion.etiqueta())
     }
 }
@@ -118,7 +163,38 @@ mod tests {
             superficie: Superficie::Firme,
             condicion: Condicion::OjosAbiertos,
             metricas: MetricasBalance { area95_cm2: area, ..MetricasBalance::default() },
+            juego: None,
         }
+    }
+
+    #[test]
+    fn un_historial_viejo_sigue_cargando_sin_el_campo_del_juego() {
+        // Línea escrita antes de que existiera el modo juego en el archivo.
+        let linea = "(epoch_s: 1, paciente: \"ID-1\", superficie: Firme, condicion: OjosAbiertos, \
+                     metricas: (longitud_cm: 1.0, area95_cm2: 2.0, velocidad_media_cms: 0.1, duracion_s: 30.0, \
+                     rms_ml_cm: 0.1, rms_ap_cm: 0.1, rango_ml_cm: 1.0, rango_ap_cm: 1.0, velocidad_ml_cms: 0.1, \
+                     velocidad_ap_cms: 0.1, frec_mediana_ml_hz: 0.5, frec_mediana_ap_hz: 0.5, f80_ml_hz: 1.0, \
+                     f80_ap_hz: 1.0))";
+        let sesion: Sesion = ron::from_str(linea).expect("deserializar una sesión vieja");
+        assert!(!sesion.es_juego());
+    }
+
+    #[test]
+    fn la_partida_se_archiva_marcada_como_juego() {
+        let juego = DatosJuego {
+            rango: RangoCalibrado::por_defecto(40.0, 40.0),
+            exigencia: 0.7,
+            duracion_s: 90.0,
+            gano: false,
+            resumen: None,
+        };
+        let sesion = Sesion::de_juego("ID-1", Superficie::Firme, MetricasBalance::default(), juego);
+
+        assert!(sesion.es_juego());
+        assert!(sesion.etiqueta().contains("juego"));
+        let texto = ron::ser::to_string(&sesion).expect("serializar");
+        let vuelta: Sesion = ron::from_str(&texto).expect("deserializar");
+        assert_eq!(sesion, vuelta);
     }
 
     #[test]

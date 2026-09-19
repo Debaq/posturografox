@@ -741,9 +741,14 @@ struct Partida {
     particulas: Vec<Particula>,
     /// Cada roca ya resuelta, con sus tiempos. Es el registro que después se
     /// cruza con el COP grabado para sacar latencias y amplitudes.
-    // Lo consumen las métricas de maniobra (R43) y el archivo (R44).
-    #[allow(dead_code)]
     eventos: Vec<EventoRoca>,
+    /// Momento del primer frame, en el reloj del firmware: el comienzo del
+    /// tramo de COP que corresponde a esta partida.
+    t_inicio_s: Option<f64>,
+    t_ultimo_s: f64,
+    /// Si el resultado ya se entregó para archivar. La partida terminada
+    /// sigue en pantalla varios frames, y el archivo tiene que ser uno solo.
+    archivada: bool,
     temporizador_polvo: f32,
     rng: Rng,
 }
@@ -791,10 +796,22 @@ impl Partida {
             gano: false,
             particulas: Vec::new(),
             eventos: Vec::new(),
+            t_inicio_s: None,
+            t_ultimo_s: 0.0,
+            archivada: false,
             temporizador_polvo: 0.0,
             rng: Rng::nueva(),
         }
     }
+}
+
+/// Lo que deja una partida terminada para archivar: el tramo de COP que le
+/// corresponde y las maniobras que exigió.
+pub struct ResultadoPartida {
+    pub t_inicio_s: f64,
+    pub t_fin_s: f64,
+    pub eventos: Vec<EventoRoca>,
+    pub gano: bool,
 }
 
 /// Estado propio del juego. Vive mientras `modo_juego` esté activo en
@@ -808,6 +825,8 @@ pub struct EstadoJuego {
     calibracion: Option<RangoCalibrado>,
     /// Calibración en curso, si el clínico apretó "Calibrar".
     calibrando: Option<Calibracion>,
+    /// Partida terminada esperando que la app la archive.
+    terminada: Option<ResultadoPartida>,
     /// La última calibración terminó sin alcanzar el mínimo utilizable. Se
     /// avisa en la vista clínica: si no, el rango por defecto pasaría por
     /// medido y el registro diría cualquier cosa.
@@ -849,6 +868,11 @@ impl EstadoJuego {
             self.calibracion = Some(rango);
             self.calibracion_fallida = false;
         }
+    }
+
+    /// Entrega la última partida terminada, una sola vez.
+    pub fn tomar_resultado(&mut self) -> Option<ResultadoPartida> {
+        self.terminada.take()
     }
 
     pub fn calibrando(&self) -> bool {
@@ -1048,6 +1072,18 @@ fn mostrar_juego(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -
         }
     }
 
+    // La partida terminada se queda varios frames en pantalla, así que el
+    // resultado se entrega una sola vez.
+    if (partida.gano || partida.game_over) && !partida.archivada {
+        partida.archivada = true;
+        estado.terminada = Some(ResultadoPartida {
+            t_inicio_s: partida.t_inicio_s.unwrap_or(partida.t_ultimo_s),
+            t_fin_s: partida.t_ultimo_s,
+            eventos: std::mem::take(&mut partida.eventos),
+            gano: partida.gano,
+        });
+    }
+
     if partida.gano {
         if partida.puntaje > estado.puntaje_maximo {
             estado.puntaje_maximo = partida.puntaje;
@@ -1226,6 +1262,8 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego, escenario: &Escenar
         partida.arranco = true;
         sonidos.push(Sonido::Inicio);
     }
+    partida.t_inicio_s.get_or_insert(entrada.t_muestra);
+    partida.t_ultimo_s = entrada.t_muestra;
 
     if partida.pausa > 0.0 {
         partida.pausa = (partida.pausa - dt).max(0.0);
