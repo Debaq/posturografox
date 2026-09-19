@@ -83,6 +83,7 @@ enum Fondo {
 }
 
 /// Lo que el posturógrafo le pasa al juego en cada frame.
+#[derive(Clone)]
 pub struct EntradaJuego {
     pub cop_ml: f64,
     // Libres para usar (ej. saltar/agachar con AP) o ignorar; ver src/juego.rs.
@@ -101,6 +102,22 @@ pub struct EntradaJuego {
     pub duracion_partida_s: f32,
     pub volumen_musica: f32,
     pub volumen_efectos: f32,
+    /// Cuántos monitores hay y en cuál se está mostrando el juego. Con uno
+    /// solo no se dibuja el botón para cambiar de pantalla.
+    pub pantallas: usize,
+    pub pantalla_actual: usize,
+    /// Nombre de la pantalla a la que saltaría el botón ("HDMI-1 · 1920×1080").
+    pub proxima_pantalla: String,
+}
+
+/// Lo que el juego le pide a la app después de un frame.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Accion {
+    Seguir,
+    /// Volver al modo clínico.
+    Salir,
+    /// Mover el juego al siguiente monitor.
+    CambiarPantalla,
 }
 
 // Paleta propia del modo juego (independiente de la vista clínica).
@@ -744,9 +761,39 @@ impl EstadoJuego {
     }
 }
 
+/// Dibuja un frame del juego y devuelve lo que el jugador pidió.
+pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> Accion {
+    let cambiar = boton_pantalla(ui, &entrada);
+    if mostrar_juego(ui, estado, entrada) {
+        Accion::Salir
+    } else if cambiar {
+        Accion::CambiarPantalla
+    } else {
+        Accion::Seguir
+    }
+}
+
+/// Botón flotante para mandar el juego al otro monitor. Solo aparece si hay
+/// más de uno: con una sola pantalla no habría a dónde ir.
+fn boton_pantalla(ui: &Ui, entrada: &EntradaJuego) -> bool {
+    if entrada.pantallas < 2 {
+        return false;
+    }
+    egui::Area::new(egui::Id::new("juego_cambiar_pantalla"))
+        .order(egui::Order::Foreground)
+        .anchor(Align2::LEFT_BOTTOM, Vec2::new(16.0, -16.0))
+        .show(ui.ctx(), |ui| {
+            let etiqueta = format!("🖵 Pasar a {}", entrada.proxima_pantalla);
+            ui.add(egui::Button::new(RichText::new(etiqueta).size(14.0)))
+                .on_hover_text(format!("Pantalla {} de {}", entrada.pantalla_actual + 1, entrada.pantallas))
+                .clicked()
+        })
+        .inner
+}
+
 /// Dibuja el juego a pantalla completa dentro de `ui`.
-/// Devuelve `true` si el jugador pidió salir (volver al modo clínico).
-pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> bool {
+/// Devuelve `true` si el jugador pidió volver al modo clínico.
+fn mostrar_juego(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> bool {
     if !estado.puntaje_maximo_cargado {
         estado.puntaje_maximo = cargar_mejor_puntaje();
         estado.puntaje_maximo_cargado = true;
@@ -1547,6 +1594,9 @@ mod tests {
             duracion_partida_s: 60.0,
             volumen_musica: 0.0,
             volumen_efectos: 0.0,
+            pantallas: 1,
+            pantalla_actual: 0,
+            proxima_pantalla: String::new(),
         }
     }
 

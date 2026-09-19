@@ -12,6 +12,7 @@ serialport = "4.10.1"
 rodio = "0.20.1"
 serde = { version = "1", features = ["derive"] }
 ron = "0.12.2"
+display-info = "0.5"
 
 [dev-dependencies]
 tempfile = "3.27.0"

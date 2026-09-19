@@ -35,6 +35,25 @@ cargo run --release -- --simular
 Genera muestras sintéticas con el mismo formato que el firmware. La app lo
 marca como "⚠ Simulado": no sirve como registro clínico.
 
+### Segunda pantalla
+
+Si hay más de un monitor conectado, el modo juego se abre en su propia ventana
+sobre la pantalla que **no** está usando el evaluador: el paciente ve el juego a
+pantalla completa mientras la ventana principal sigue mostrando el COP y las
+métricas. Un botón abajo a la izquierda del juego lo pasa al otro monitor, y la
+tarjeta "JUEGO" de la vista clínica dice en cuál está y permite cerrarlo.
+
+Con un solo monitor el juego ocupa la ventana principal, como siempre.
+
+```bash
+cargo run --release -- --simular --juego   # arranca directo en el modo juego
+POSTUROGRAFOX_PANTALLAS=2 cargo run --release -- --simular --juego
+```
+
+La variable `POSTUROGRAFOX_PANTALLAS` parte la pantalla real en esa cantidad de
+monitores de mentira. Sirve para probar el modo de dos pantallas en una máquina
+que tiene una sola.
+
 Para desarrollo:
 
 ```bash

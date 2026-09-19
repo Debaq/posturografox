@@ -11,6 +11,7 @@ mod historial;
 mod informe;
 mod juego;
 mod limites;
+mod pantallas;
 mod precarga;
 mod serial_link;
 mod simulador;
@@ -33,6 +34,8 @@ Opciones:
   --simular   Arranca con el posturógrafo simulado, sin hardware. Sirve para
               desarrollar, mostrar la app o probar el modo juego. Los datos
               son sintéticos y no valen como registro clínico.
+  --juego     Abre directamente el modo juego, sin pasar por la vista clínica.
+              Si hay una segunda pantalla, el juego se abre ahí.
   --ayuda     Muestra esta ayuda.
 ";
 
@@ -43,6 +46,7 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     let simular = argumentos.iter().any(|a| a == "--simular");
+    let juego = argumentos.iter().any(|a| a == "--juego");
 
     let opciones = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -61,6 +65,9 @@ fn main() -> eframe::Result<()> {
             let mut aplicacion = app::PosturografoxApp::nueva(cc);
             if simular {
                 aplicacion.conectar_simulador();
+            }
+            if juego {
+                aplicacion.empezar_en_modo_juego();
             }
             Ok(Box::new(aplicacion))
         }),

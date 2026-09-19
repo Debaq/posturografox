@@ -509,6 +509,19 @@ pub struct PosturografoxApp {
     // Modo juego (ver src/juego.rs)
     modo_juego: bool,
     estado_juego: juego::EstadoJuego,
+    /// Monitores conectados (ver src/pantallas.rs).
+    pantallas: crate::pantallas::Pantallas,
+    /// En qué monitor se está mostrando el juego cuando va en su propia
+    /// ventana. `None` mientras el juego se dibuja en la ventana principal.
+    pantalla_juego: Option<usize>,
+    /// Pasos que faltan de la mudanza del juego a otro monitor. Salir de
+    /// pantalla completa, moverse y volver a entrar no se puede hacer en el
+    /// mismo frame: el gestor de ventanas necesita ver un paso por vez.
+    mudanza: Option<u8>,
+    /// Arrancar directo en el modo juego (opción `--juego`). Se resuelve en el
+    /// primer frame, que es cuando ya hay un `Context` del que sacar en qué
+    /// pantalla quedó la ventana.
+    juego_al_arrancar: bool,
 }
 
 impl Default for PosturografoxApp {
@@ -578,6 +591,10 @@ impl Default for PosturografoxApp {
             tema_aplicado: None,
             modo_juego: false,
             estado_juego: juego::EstadoJuego::default(),
+            pantallas: crate::pantallas::Pantallas::new(),
+            pantalla_juego: None,
+            mudanza: None,
+            juego_al_arrancar: false,
         }
     }
 }
@@ -852,6 +869,120 @@ impl PosturografoxApp {
         }
         self.ultimo_ml = cop_ml;
         self.ultimo_ap = cop_ap;
+    }
+
+    /// Datos que el juego necesita de la plataforma y de la configuración.
+    fn entrada_juego(&mut self, ctx: &egui::Context) -> juego::EntradaJuego {
+        let cuantas = self.pantallas.actual().len();
+        let actual = self.pantalla_juego.unwrap_or(0);
+        let proxima = self.pantallas.actual().get((actual + 1) % cuantas.max(1)).map(|p| p.etiqueta());
+        juego::EntradaJuego {
+            cop_ml: self.ultimo_ml,
+            cop_ap: self.ultimo_ap,
+            ancho_cm: self.config.ancho_cm,
+            prof_cm: self.config.prof_cm,
+            conectado: self.conexion.is_some(),
+            en_plataforma: self.ocupado,
+            dt: ctx.input(|i| i.stable_dt),
+            duracion_partida_s: self.config.duracion_partida_s,
+            volumen_musica: self.config.volumen_musica,
+            volumen_efectos: self.config.volumen_efectos,
+            pantallas: cuantas,
+            pantalla_actual: actual,
+            proxima_pantalla: proxima.unwrap_or_default(),
+        }
+    }
+
+    /// Pide arrancar directamente en el modo juego (opción `--juego`).
+    pub fn empezar_en_modo_juego(&mut self) {
+        self.juego_al_arrancar = true;
+    }
+
+    /// Abre el modo juego. Si hay más de un monitor, el juego se va al que no
+    /// está usando el evaluador y esta ventana sigue mostrando las métricas.
+    fn abrir_juego(&mut self, ctx: &egui::Context) {
+        self.modo_juego = true;
+        self.pantallas.refrescar();
+        self.pantalla_juego = if self.pantallas.hay_varias() {
+            let esquina = ctx.input(|i| i.viewport().outer_rect.map(|r| [r.min.x, r.min.y]));
+            Some(self.pantallas.para_el_paciente(esquina))
+        } else {
+            None // una sola pantalla: el juego ocupa esta misma ventana
+        };
+        self.mudanza = None;
+    }
+
+    fn cerrar_juego(&mut self) {
+        self.modo_juego = false;
+        self.pantalla_juego = None;
+        self.mudanza = None;
+    }
+
+    /// Dibuja el juego en su propia ventana, a pantalla completa sobre el
+    /// monitor del paciente.
+    fn juego_en_su_pantalla(&mut self, ctx: &egui::Context) {
+        let Some(indice) = self.pantalla_juego else { return };
+        let Some(pantalla) = self.pantallas.actual().get(indice).cloned() else {
+            // Desenchufaron la pantalla: el juego vuelve a esta ventana.
+            self.pantalla_juego = None;
+            return;
+        };
+        let entrada = self.entrada_juego(ctx);
+        let constructor = egui::ViewportBuilder::default()
+            .with_title("Posturografox — Juego")
+            .with_position(pantalla.posicion_logica())
+            .with_inner_size(pantalla.tamano_logico())
+            .with_fullscreen(true);
+
+        let estado = &mut self.estado_juego;
+        let mudanza = self.mudanza;
+        let posicion = pantalla.posicion_logica();
+        let mut cerrar = false;
+        let mut accion = juego::Accion::Seguir;
+
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("juego"), constructor, |ui, clase| {
+            // Si el backend no soporta ventanas extra, egui la encaja dentro
+            // de la principal; el juego funciona igual.
+            let _ = clase;
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().window_fill)).show(ui, |ui| {
+                accion = juego::mostrar(ui, estado, entrada.clone());
+            });
+            // Mudarse de monitor son tres pasos y uno por frame: salir de
+            // pantalla completa, moverse, y volver a entrar. Hacerlos juntos
+            // deja la ventana a medio camino.
+            match mudanza {
+                Some(0) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(false)),
+                Some(1) => ui
+                    .ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::Pos2::new(posicion[0], posicion[1]))),
+                Some(_) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(true)),
+                None => {}
+            }
+            cerrar = ui.ctx().input(|i| i.viewport().close_requested());
+            ui.ctx().request_repaint();
+        });
+
+        self.mudanza = siguiente_paso_de_mudanza(self.mudanza);
+        match accion {
+            juego::Accion::Salir => self.cerrar_juego(),
+            juego::Accion::CambiarPantalla => self.cambiar_pantalla_del_juego(),
+            juego::Accion::Seguir => {}
+        }
+        if cerrar {
+            self.cerrar_juego();
+        }
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+
+    /// Pasa el juego al siguiente monitor de la lista.
+    fn cambiar_pantalla_del_juego(&mut self) {
+        let cuantas = self.pantallas.actual().len();
+        if cuantas < 2 {
+            return;
+        }
+        let actual = self.pantalla_juego.unwrap_or(0);
+        self.pantalla_juego = Some((actual + 1) % cuantas);
+        self.mudanza = Some(0);
     }
 
     /// Reparte lo que la precarga fue terminando y, mientras no esté lista,
@@ -1369,11 +1500,25 @@ impl PosturografoxApp {
                 self.ejercicio.iniciar();
             }
         });
+        let mut abrir_juego = false;
+        let mut cerrar_juego = false;
+        let juego_aparte = self.modo_juego && self.pantalla_juego.is_some();
+        let pantalla_del_juego =
+            self.pantalla_juego.and_then(|i| self.pantallas.actual().get(i).map(|p| p.etiqueta())).unwrap_or_default();
         tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
-            if ui.button("🎮 Modo juego").clicked() {
-                self.modo_juego = true;
+            if juego_aparte {
+                ui.label(format!("🎮 Jugando en {pantalla_del_juego}"));
+                cerrar_juego = ui.button("Cerrar juego").clicked();
+            } else if ui.button("🎮 Modo juego").clicked() {
+                abrir_juego = true;
             }
         });
+        if abrir_juego {
+            self.abrir_juego(ui.ctx());
+        }
+        if cerrar_juego {
+            self.cerrar_juego();
+        }
     }
 
     fn exportar_sesion(&mut self) {
@@ -1985,26 +2130,26 @@ impl eframe::App for PosturografoxApp {
             self.descubrimiento = None;
         }
 
+        if self.juego_al_arrancar {
+            self.juego_al_arrancar = false;
+            self.abrir_juego(ui.ctx());
+        }
+
         if self.modo_juego {
-            let entrada = juego::EntradaJuego {
-                cop_ml: self.ultimo_ml,
-                cop_ap: self.ultimo_ap,
-                ancho_cm: self.config.ancho_cm,
-                prof_cm: self.config.prof_cm,
-                conectado: self.conexion.is_some(),
-                en_plataforma: self.ocupado,
-                dt: ui.input(|i| i.stable_dt),
-                duracion_partida_s: self.config.duracion_partida_s,
-                volumen_musica: self.config.volumen_musica,
-                volumen_efectos: self.config.volumen_efectos,
-            };
-            egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().window_fill)).show(ui, |ui| {
-                if juego::mostrar(ui, &mut self.estado_juego, entrada) {
-                    self.modo_juego = false;
-                }
-            });
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
-            return;
+            if self.pantalla_juego.is_some() {
+                // El juego va en su propia ventana, en la pantalla del
+                // paciente: acá se sigue dibujando la vista del evaluador.
+                self.juego_en_su_pantalla(ui.ctx());
+            } else {
+                let entrada = self.entrada_juego(ui.ctx());
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(ui.visuals().window_fill)).show(ui, |ui| {
+                    if juego::mostrar(ui, &mut self.estado_juego, entrada) == juego::Accion::Salir {
+                        self.modo_juego = false;
+                    }
+                });
+                ui.ctx().request_repaint_after(Duration::from_millis(16));
+                return;
+            }
         }
 
         if self.modo_paciente {
@@ -2081,9 +2226,86 @@ impl eframe::App for PosturografoxApp {
     }
 }
 
+/// Avanza la mudanza del juego de un monitor a otro: sale de pantalla
+/// completa, se mueve y vuelve a entrar, un paso por frame.
+fn siguiente_paso_de_mudanza(mudanza: Option<u8>) -> Option<u8> {
+    match mudanza {
+        Some(paso) if paso < 2 => Some(paso + 1),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pantallas::{Pantallas, pantalla_de_prueba};
+
+    fn app_con_dos_pantallas() -> PosturografoxApp {
+        PosturografoxApp {
+            pantallas: Pantallas::con_lista(vec![
+                pantalla_de_prueba("eDP-1", 0, true),
+                pantalla_de_prueba("HDMI-1", 1920, false),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn el_boton_de_pantalla_va_rotando_entre_los_monitores() {
+        let mut app = app_con_dos_pantallas();
+        app.modo_juego = true;
+        app.pantalla_juego = Some(1);
+
+        app.cambiar_pantalla_del_juego();
+        assert_eq!(app.pantalla_juego, Some(0), "pasa al otro monitor");
+        assert_eq!(app.mudanza, Some(0), "y arranca la mudanza");
+
+        app.cambiar_pantalla_del_juego();
+        assert_eq!(app.pantalla_juego, Some(1), "y del último vuelve al primero");
+    }
+
+    #[test]
+    fn con_un_solo_monitor_no_hay_a_donde_cambiar() {
+        let mut app = PosturografoxApp {
+            pantallas: Pantallas::con_lista(vec![pantalla_de_prueba("eDP-1", 0, true)]),
+            pantalla_juego: Some(0),
+            ..Default::default()
+        };
+
+        app.cambiar_pantalla_del_juego();
+
+        assert_eq!(app.pantalla_juego, Some(0));
+        assert_eq!(app.mudanza, None, "sin mudanza no se toca la ventana");
+    }
+
+    #[test]
+    fn la_mudanza_es_de_a_un_paso_por_frame() {
+        // Salir de pantalla completa, moverse y volver a entrar: si se hace
+        // todo junto, la ventana queda a medio camino entre los dos monitores.
+        let mut paso = Some(0);
+        let mut pasos = 0;
+        while paso.is_some() {
+            paso = siguiente_paso_de_mudanza(paso);
+            pasos += 1;
+            assert!(pasos <= 4, "la mudanza tiene que terminar");
+        }
+        assert_eq!(pasos, 3, "tres pasos: salir, mover, entrar");
+        assert_eq!(siguiente_paso_de_mudanza(None), None, "sin mudanza en curso no pasa nada");
+    }
+
+    #[test]
+    fn cerrar_el_juego_lo_deja_todo_en_cero() {
+        let mut app = app_con_dos_pantallas();
+        app.modo_juego = true;
+        app.pantalla_juego = Some(1);
+        app.mudanza = Some(1);
+
+        app.cerrar_juego();
+
+        assert!(!app.modo_juego);
+        assert_eq!(app.pantalla_juego, None);
+        assert_eq!(app.mudanza, None);
+    }
 
     #[test]
     fn los_tramos_del_trazo_cubren_todo_sin_dejar_huecos() {
