@@ -77,9 +77,6 @@ impl Eje {
     /// plataforma. Devuelve `None` si alguno de los dos alcances quedó por
     /// debajo del mínimo utilizable: es preferible el rango por defecto a una
     /// calibración que amplifique el ruido.
-    // Lo consumen las dos fuentes de calibración: el botón del juego (R38) y
-    // el ejercicio de límites (R39).
-    #[allow(dead_code)]
     pub fn nuevo(centro_cm: f64, min_cm: f64, max_cm: f64, limite_cm: f64) -> Option<Self> {
         let limite = limite_cm.abs();
         let eje = Self {
@@ -153,10 +150,208 @@ impl RangoCalibrado {
     /// Rango medido. Si alguno de los dos ejes no pasa la validación, la
     /// calibración entera se descarta: mezclar un eje medido con otro por
     /// defecto daría un registro imposible de interpretar después.
-    // Lo consumen las dos fuentes de calibración (R38 y R39).
-    #[allow(dead_code)]
     pub fn medido(ml: Option<Eje>, ap: Option<Eje>, origen: Origen) -> Option<Self> {
         Some(Self { ml: ml?, ap: ap?, origen })
+    }
+}
+
+/// Cuánto dura la toma de reposo, y cuánto se descarta al principio para que
+/// no entre el movimiento de acomodarse recién subido.
+const REPOSO_S: f32 = 4.0;
+const REPOSO_DESCARTE_S: f32 = 1.0;
+
+/// Cuánto hay que sostener el alcance cerca del máximo para darlo por bueno.
+/// Un pico instantáneo puede ser un tropiezo; medio segundo sostenido es un
+/// alcance que la persona controla.
+const SOSTENER_S: f32 = 0.5;
+
+/// Margen dentro del cual se considera que sigue sosteniendo el alcance.
+const TOLERANCIA_CM: f64 = 0.5;
+
+/// Si no logra sostener nada en este tiempo, se toma lo que haya y se sigue:
+/// dejar a alguien empujando contra su límite no mejora la medición.
+const PASO_MAXIMO_S: f32 = 12.0;
+
+/// Los pasos de la calibración, en orden.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Paso {
+    Reposo,
+    Izquierda,
+    Derecha,
+    Atras,
+    Adelante,
+}
+
+const PASOS: [Paso; 5] = [Paso::Reposo, Paso::Izquierda, Paso::Derecha, Paso::Atras, Paso::Adelante];
+
+impl Paso {
+    /// Qué se le pide al paciente. La segunda línea es el detalle chico.
+    pub fn instruccion(self) -> (&'static str, &'static str) {
+        match self {
+            Paso::Reposo => ("Quédese quieto", "Parado como siempre, mirando al frente"),
+            Paso::Izquierda => ("Cárguese a la izquierda", "Sin despegar los pies, y sosténgalo"),
+            Paso::Derecha => ("Cárguese a la derecha", "Sin despegar los pies, y sosténgalo"),
+            Paso::Atras => ("Inclínese hacia atrás", "Sin despegar los talones, y sosténgalo"),
+            Paso::Adelante => ("Inclínese hacia adelante", "Sin despegar los dedos, y sosténgalo"),
+        }
+    }
+
+    /// Eje que mide el paso: `true` si es medio-lateral.
+    pub fn es_ml(self) -> bool {
+        matches!(self, Paso::Izquierda | Paso::Derecha)
+    }
+
+    /// Hacia dónde tiene que ir el COP (+1 derecha/adelante, -1 izquierda/atrás).
+    /// En el reposo no se pide dirección.
+    pub fn signo(self) -> f64 {
+        match self {
+            Paso::Reposo => 0.0,
+            Paso::Izquierda | Paso::Atras => -1.0,
+            Paso::Derecha | Paso::Adelante => 1.0,
+        }
+    }
+}
+
+/// Toma de la medida: reposo y un alcance sostenido hacia cada lado.
+///
+/// Es pura —se le van pasando muestras y devuelve en qué anda—, así que el
+/// juego solo dibuja lo que ella decide y la secuencia se puede testear sin
+/// ventana ni plataforma.
+pub struct Calibracion {
+    indice: usize,
+    /// Cuánto lleva el paso actual.
+    tiempo_s: f32,
+    /// Cuánto lleva sosteniendo cerca del mejor alcance del paso.
+    sostenido_s: f32,
+    /// Suma y cuenta del reposo, para el promedio de los dos ejes.
+    suma_reposo: [f64; 2],
+    muestras_reposo: u32,
+    centro: [f64; 2],
+    /// Mejor alcance del paso en curso, en cm de COP con signo.
+    mejor_cm: f64,
+    /// Extremos ya confirmados: [izq, der, atrás, adelante].
+    extremos_cm: [f64; 4],
+}
+
+impl Default for Calibracion {
+    fn default() -> Self {
+        Self {
+            indice: 0,
+            tiempo_s: 0.0,
+            sostenido_s: 0.0,
+            suma_reposo: [0.0; 2],
+            muestras_reposo: 0,
+            centro: [0.0; 2],
+            mejor_cm: 0.0,
+            extremos_cm: [0.0; 4],
+        }
+    }
+}
+
+impl Calibracion {
+    /// Paso en curso, o `None` si ya terminó.
+    pub fn paso(&self) -> Option<Paso> {
+        PASOS.get(self.indice).copied()
+    }
+
+    pub fn termino(&self) -> bool {
+        self.indice >= PASOS.len()
+    }
+
+    /// Número del paso en curso y total, para el "2 de 5" de la pantalla.
+    pub fn numero(&self) -> (usize, usize) {
+        (self.indice.min(PASOS.len() - 1) + 1, PASOS.len())
+    }
+
+    /// Cuánto falta del paso actual, de 0.0 a 1.0. En el reposo es el tiempo
+    /// corrido; en los alcances, cuánto lleva sosteniendo.
+    pub fn progreso(&self) -> f32 {
+        match self.paso() {
+            Some(Paso::Reposo) => (self.tiempo_s / REPOSO_S).clamp(0.0, 1.0),
+            Some(_) => (self.sostenido_s / SOSTENER_S).clamp(0.0, 1.0),
+            None => 1.0,
+        }
+    }
+
+    /// Alcance que lleva medido en el paso actual, en cm desde el centro de
+    /// reposo. Sirve para mostrarle al paciente hasta dónde llegó.
+    pub fn alcance_actual_cm(&self) -> f64 {
+        let Some(paso) = self.paso() else { return 0.0 };
+        (self.mejor_cm - self.centro_de(paso)) * paso.signo()
+    }
+
+    fn centro_de(&self, paso: Paso) -> f64 {
+        if paso.es_ml() { self.centro[0] } else { self.centro[1] }
+    }
+
+    /// Le pasa una muestra más. `dt` en segundos, COP en cm.
+    pub fn avanzar(&mut self, dt: f32, cop_ml: f64, cop_ap: f64) {
+        let Some(paso) = self.paso() else { return };
+        let dt = dt.clamp(0.0, 0.1); // un frame largo no vale por medio segundo
+        self.tiempo_s += dt;
+
+        if paso == Paso::Reposo {
+            // El primer segundo se tira: recién subido todavía se está acomodando.
+            if self.tiempo_s > REPOSO_DESCARTE_S {
+                self.suma_reposo[0] += cop_ml;
+                self.suma_reposo[1] += cop_ap;
+                self.muestras_reposo += 1;
+            }
+            if self.tiempo_s >= REPOSO_S {
+                if self.muestras_reposo > 0 {
+                    let n = f64::from(self.muestras_reposo);
+                    self.centro = [self.suma_reposo[0] / n, self.suma_reposo[1] / n];
+                }
+                self.siguiente();
+            }
+            return;
+        }
+
+        let valor = if paso.es_ml() { cop_ml } else { cop_ap };
+        // Se trabaja con la proyección sobre la dirección pedida, así los
+        // cuatro pasos comparten la misma cuenta aunque apunten a lados
+        // opuestos: "más lejos" siempre es un número más grande.
+        let proyeccion = (valor - self.centro_de(paso)) * paso.signo();
+        let mejor = (self.mejor_cm - self.centro_de(paso)) * paso.signo();
+        if proyeccion > mejor {
+            self.mejor_cm = valor;
+            self.sostenido_s = 0.0; // llegó más lejos: el sostén empieza de nuevo
+        } else if proyeccion >= mejor - TOLERANCIA_CM && mejor >= MEDIO_ALCANCE_MINIMO_CM {
+            // El sostén solo corre una vez que llegó a un alcance utilizable:
+            // si no, quedarse quieto cerraría el paso en medio segundo sin
+            // haber medido nada.
+            self.sostenido_s += dt;
+        }
+
+        // Se cierra el paso al sostener el alcance, o al agotar el tiempo: si
+        // no pudo sostener nada, insistir no va a mejorar la medida.
+        if self.sostenido_s >= SOSTENER_S || self.tiempo_s >= PASO_MAXIMO_S {
+            self.extremos_cm[self.indice - 1] = self.mejor_cm;
+            self.siguiente();
+        }
+    }
+
+    fn siguiente(&mut self) {
+        self.indice += 1;
+        self.tiempo_s = 0.0;
+        self.sostenido_s = 0.0;
+        // El nuevo paso arranca sin alcance: el centro del eje que le toca.
+        self.mejor_cm = self.paso().map(|p| self.centro_de(p)).unwrap_or(0.0);
+    }
+
+    /// Rango medido, una vez terminada. `None` mientras siga en curso, y
+    /// también si lo medido no llega al mínimo utilizable: en ese caso el
+    /// juego se queda con el rango por defecto.
+    pub fn resultado(&self, ancho_cm: f64, prof_cm: f64) -> Option<RangoCalibrado> {
+        if !self.termino() {
+            return None;
+        }
+        let [izq, der, atras, adelante] = self.extremos_cm;
+        RangoCalibrado::medido(
+            Eje::nuevo(self.centro[0], izq, der, ancho_cm / 2.0),
+            Eje::nuevo(self.centro[1], atras, adelante, prof_cm / 2.0),
+            Origen::Juego,
+        )
     }
 }
 
@@ -166,6 +361,94 @@ mod tests {
 
     /// Plataforma de referencia: 40x40 cm, o sea semiejes de 20 cm.
     const LIMITE: f64 = 20.0;
+
+    /// Corre la calibración entera con un COP que obedece: se queda en
+    /// `centro` y en cada paso de alcance se va al valor pedido.
+    fn calibrar(centro: [f64; 2], alcances: [f64; 4]) -> Calibracion {
+        let mut cal = Calibracion::default();
+        let mut i = 0;
+        while !cal.termino() {
+            let (ml, ap) = match cal.paso() {
+                Some(Paso::Reposo) | None => (centro[0], centro[1]),
+                Some(Paso::Izquierda) => (alcances[0], centro[1]),
+                Some(Paso::Derecha) => (alcances[1], centro[1]),
+                Some(Paso::Atras) => (centro[0], alcances[2]),
+                Some(Paso::Adelante) => (centro[0], alcances[3]),
+            };
+            cal.avanzar(0.05, ml, ap);
+            i += 1;
+            assert!(i < 10_000, "la calibración no termina");
+        }
+        cal
+    }
+
+    #[test]
+    fn la_calibracion_recorre_los_cinco_pasos_y_mide_los_cuatro_alcances() {
+        let cal = calibrar([0.0, 0.0], [-5.0, 6.0, -3.0, 7.0]);
+        let rango = cal.resultado(40.0, 40.0).expect("calibración utilizable");
+
+        assert_eq!(rango.origen, Origen::Juego);
+        assert!((rango.ml.min_cm + 5.0).abs() < 1e-9);
+        assert!((rango.ml.max_cm - 6.0).abs() < 1e-9);
+        assert!((rango.ap.min_cm + 3.0).abs() < 1e-9);
+        assert!((rango.ap.max_cm - 7.0).abs() < 1e-9);
+        assert_eq!(cal.numero().1, 5);
+    }
+
+    #[test]
+    fn el_reposo_queda_como_centro_aunque_este_corrido() {
+        let cal = calibrar([3.0, -1.0], [-1.0, 8.0, -4.0, 5.0]);
+        let rango = cal.resultado(40.0, 40.0).expect("calibración utilizable");
+
+        assert!((rango.ml.centro_cm - 3.0).abs() < 1e-9, "el centro es su reposo, no el cero de la plataforma");
+        assert!((rango.ap.centro_cm + 1.0).abs() < 1e-9);
+        assert!((rango.ml.alcance_positivo_cm() - 5.0).abs() < 1e-9);
+        assert!((rango.ml.alcance_negativo_cm() - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quedarse_quieto_no_cierra_los_pasos_de_alcance() {
+        // Alguien que no se mueve nada: los pasos tienen que agotar su tiempo,
+        // no darse por buenos en cuanto "sostiene" el cero.
+        let mut cal = Calibracion::default();
+        let mut tiempo = 0.0_f32;
+        while !cal.termino() {
+            cal.avanzar(0.05, 0.0, 0.0);
+            tiempo += 0.05;
+        }
+        assert!(tiempo > REPOSO_S + 4.0 * PASO_MAXIMO_S - 1.0, "cerró demasiado rápido: {tiempo} s");
+        assert!(cal.resultado(40.0, 40.0).is_none(), "sin alcance no hay calibración válida");
+    }
+
+    #[test]
+    fn un_pico_suelto_no_cuenta_como_alcance() {
+        // Toca 6 cm un frame y se vuelve al centro: no lo sostuvo, así que el
+        // paso no se cierra por sostén y hay que esperar el tiempo máximo.
+        let mut cal = Calibracion::default();
+        for _ in 0..(REPOSO_S / 0.05) as usize + 1 {
+            cal.avanzar(0.05, 0.0, 0.0);
+        }
+        assert_eq!(cal.paso(), Some(Paso::Izquierda));
+
+        cal.avanzar(0.05, -6.0, 0.0);
+        for _ in 0..20 {
+            cal.avanzar(0.05, 0.0, 0.0);
+        }
+        assert_eq!(cal.paso(), Some(Paso::Izquierda), "un pico no alcanza para cerrar el paso");
+        assert!(cal.progreso() < 1.0);
+    }
+
+    #[test]
+    fn el_paso_se_cierra_al_sostener_el_alcance() {
+        let mut cal = Calibracion::default();
+        for _ in 0..(REPOSO_S / 0.05) as usize + 1 {
+            cal.avanzar(0.05, 0.0, 0.0);
+        }
+        for _ in 0..(SOSTENER_S / 0.05) as usize + 1 {
+            cal.avanzar(0.05, -6.0, 0.0);
+        }
+        assert_eq!(cal.paso(), Some(Paso::Derecha), "sostenido medio segundo, pasa al otro lado");
+    }
 
     #[test]
     fn el_rango_por_defecto_no_usa_el_semieje_de_la_plataforma() {

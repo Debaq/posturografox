@@ -5,7 +5,7 @@
 use egui::{Align2, Color32, ColorImage, Image, Key, Pos2, Rect, RichText, TextureHandle, TextureOptions, Ui, Vec2};
 use rodio::Source;
 
-use crate::rango::RangoCalibrado;
+use crate::rango::{Calibracion, Paso, RangoCalibrado};
 
 const ZORRO_BYTES: &[u8] = include_bytes!("../assets/fox.png");
 const GALLINA_BYTES: &[u8] = include_bytes!("../assets/gallina.png");
@@ -98,6 +98,10 @@ pub struct EntradaJuego {
     /// Qué fracción de ese alcance hay que cubrir para llegar al borde de la
     /// pista (`rango::EXIGENCIA_DEFECTO` hasta que sea configurable).
     pub exigencia: f64,
+    /// Semiejes físicos de la plataforma (ancho/2, profundidad/2). Sirven
+    /// **solo** para recortar lo que mide la calibración a lo que la
+    /// plataforma puede sostener; la escala del juego sale de `rango`.
+    pub semiejes_cm: [f64; 2],
     pub conectado: bool,
     /// Hay alguien parado sobre la plataforma. Sin esto el juego arrancaba con
     /// solo estar conectado: el reloj corría y el zorro quedaba clavado en el
@@ -745,6 +749,12 @@ pub struct EstadoJuego {
     /// sobreviva a "Reintentar": se calibra una vez por sesión, no por
     /// partida. Mientras esté vacío se usa el rango por defecto.
     calibracion: Option<RangoCalibrado>,
+    /// Calibración en curso, si el clínico apretó "Calibrar".
+    calibrando: Option<Calibracion>,
+    /// La última calibración terminó sin alcanzar el mínimo utilizable. Se
+    /// avisa en la vista clínica: si no, el rango por defecto pasaría por
+    /// medido y el registro diría cualquier cosa.
+    calibracion_fallida: bool,
     puntaje_maximo: f32,
     puntaje_maximo_cargado: bool,
     /// Texturas ya subidas a la GPU, una por entrada de `HOJAS`.
@@ -766,6 +776,34 @@ impl EstadoJuego {
         self.calibracion.unwrap_or_else(|| RangoCalibrado::por_defecto(ancho_cm, prof_cm))
     }
 
+    /// Arranca la toma de la medida. La partida en curso se descarta: el
+    /// paciente tiene que quedarse quieto para el reposo.
+    pub fn iniciar_calibracion(&mut self) {
+        self.calibrando = Some(Calibracion::default());
+        self.calibracion_fallida = false;
+        self.partida = None;
+    }
+
+    pub fn calibrando(&self) -> bool {
+        self.calibrando.is_some()
+    }
+
+    /// Una línea para la tarjeta JUEGO: de dónde sale el rango que se está
+    /// usando y cuánto alcanza el paciente.
+    pub fn resumen_calibracion(&self) -> String {
+        match self.calibracion {
+            Some(r) => format!(
+                "Calibrado · ML {:.1}/{:.1} cm · AP {:.1}/{:.1} cm",
+                r.ml.alcance_negativo_cm(),
+                r.ml.alcance_positivo_cm(),
+                r.ap.alcance_negativo_cm(),
+                r.ap.alcance_positivo_cm(),
+            ),
+            None if self.calibracion_fallida => "Sin calibrar: la última medida no llegó al mínimo".to_string(),
+            None => "Sin calibrar: se usa el rango por defecto".to_string(),
+        }
+    }
+
     /// Guarda una imagen ya decodificada en el arranque.
     pub fn recibir_imagen(&mut self, nombre: &'static str, imagen: ColorImage) {
         self.imagenes.insert(nombre, imagen);
@@ -780,6 +818,9 @@ impl EstadoJuego {
 /// Dibuja un frame del juego y devuelve lo que el jugador pidió.
 pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> Accion {
     let cambiar = boton_pantalla(ui, &entrada);
+    if boton_calibrar(ui, &entrada, estado.calibrando()) {
+        estado.iniciar_calibracion();
+    }
     if mostrar_juego(ui, estado, entrada) {
         Accion::Salir
     } else if cambiar {
@@ -802,6 +843,25 @@ fn boton_pantalla(ui: &Ui, entrada: &EntradaJuego) -> bool {
             let etiqueta = format!("🖵 Pasar a {}", entrada.proxima_pantalla);
             ui.add(egui::Button::new(RichText::new(etiqueta).size(14.0)))
                 .on_hover_text(format!("Pantalla {} de {}", entrada.pantalla_actual + 1, entrada.pantallas))
+                .clicked()
+        })
+        .inner
+}
+
+/// Botón flotante para tomar la medida del alcance del paciente. Solo
+/// aparece con alguien parado en la plataforma: el reposo y los alcances no
+/// se pueden medir de otra forma. El mismo botón está en la tarjeta JUEGO de
+/// la vista clínica, para el evaluador que no mira la pantalla del paciente.
+fn boton_calibrar(ui: &Ui, entrada: &EntradaJuego, calibrando: bool) -> bool {
+    if calibrando || !entrada.conectado || !entrada.en_plataforma {
+        return false;
+    }
+    egui::Area::new(egui::Id::new("juego_calibrar"))
+        .order(egui::Order::Foreground)
+        .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -16.0))
+        .show(ui.ctx(), |ui| {
+            ui.add(egui::Button::new(RichText::new("Calibrar alcance").size(14.0)))
+                .on_hover_text("Mide hasta dónde llega el COP de esta persona y ajusta el juego a eso")
                 .clicked()
         })
         .inner
@@ -841,6 +901,7 @@ fn mostrar_juego(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -
 
     if !entrada.conectado || !entrada.en_plataforma {
         estado.partida = None; // evita que arranque con velocidad "gratis" mientras no hay lecturas
+        estado.calibrando = None; // el reposo y los alcances se miden parado, no a medias
         if let Some(audio) = audio.as_deref_mut() {
             if salir_tecla {
                 audio.detener_musica(); // se sale al modo clínico, no dejar sonando
@@ -854,6 +915,25 @@ fn mostrar_juego(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -
             ("Conecte el posturógrafo para jugar", "En cuanto detecte señal, arranca solo")
         };
         dibujar_espera(ui, &sprites.zorro, motivo.0, motivo.1);
+        return salir_tecla;
+    }
+
+    // La calibración va antes que la partida: mide con el paciente quieto y
+    // pidiéndole alcances, así que no puede convivir con las rocas cayendo.
+    if let Some(cal) = estado.calibrando.as_mut() {
+        cal.avanzar(entrada.dt, entrada.cop_ml, entrada.cop_ap);
+        let termino = cal.termino();
+        let resultado = cal.resultado(entrada.semiejes_cm[0] * 2.0, entrada.semiejes_cm[1] * 2.0);
+        let cancelar = dibujar_calibracion(ui, &sprites, cal, &entrada);
+        if termino {
+            // Sin resultado la medida no llegó al mínimo utilizable: se sigue
+            // con el rango por defecto, pero queda dicho en la vista clínica.
+            estado.calibracion_fallida = resultado.is_none();
+            estado.calibracion = resultado;
+            estado.calibrando = None;
+        } else if cancelar {
+            estado.calibrando = None;
+        }
         return salir_tecla;
     }
 
@@ -1360,6 +1440,136 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
+/// Degradé de cielo de fondo, el mismo de la pantalla de espera y de la
+/// calibración.
+fn fondo_cielo(painter: &egui::Painter, rect: Rect) {
+    let franjas = 24;
+    for i in 0..franjas {
+        let t0 = i as f32 / franjas as f32;
+        let t1 = (i + 1) as f32 / franjas as f32;
+        let color = lerp_color(CIELO_ARRIBA, CIELO_ABAJO, t0);
+        let franja = Rect::from_min_max(
+            Pos2::new(rect.left(), rect.top() + t0 * rect.height()),
+            Pos2::new(rect.right(), rect.top() + t1 * rect.height()),
+        );
+        painter.rect_filled(franja, 0.0, color);
+    }
+}
+
+/// Pantalla de la calibración: se le pide al paciente reposo y un alcance
+/// sostenido hacia cada lado, con el zorro siguiendo su peso para que vea
+/// que la plataforma responde. Devuelve `true` si se pidió cancelar.
+fn dibujar_calibracion(ui: &mut Ui, sprites: &Recursos, cal: &Calibracion, entrada: &EntradaJuego) -> bool {
+    let rect = ui.available_rect_before_wrap();
+    let alto = rect.height();
+    let cx = rect.center().x;
+    let paso = cal.paso().unwrap_or(Paso::Reposo);
+    let (titulo, detalle) = paso.instruccion();
+    let (numero, total) = cal.numero();
+
+    {
+        let painter = ui.painter();
+        fondo_cielo(painter, rect);
+        let texto_centrado = |texto: &str, y_frac: f32, tamano: f32, color: Color32| {
+            painter.text(
+                Pos2::new(cx, rect.top() + alto * y_frac),
+                Align2::CENTER_CENTER,
+                texto,
+                egui::FontId::proportional(tamano),
+                color,
+            );
+        };
+        texto_centrado(
+            &format!("CALIBRACIÓN · PASO {numero} DE {total}"),
+            0.07,
+            (alto * 0.022).clamp(12.0, 17.0),
+            TEXTO.gamma_multiply(0.6),
+        );
+        texto_centrado(titulo, 0.15, (alto * 0.045).clamp(22.0, 38.0), TEXTO);
+        texto_centrado(detalle, 0.21, (alto * 0.024).clamp(13.0, 18.0), TEXTO.gamma_multiply(0.65));
+    }
+
+    // Área donde se mueve el zorro. Se dibuja como la plataforma vista desde
+    // arriba: izquierda/derecha es medio-lateral, arriba es hacia adelante.
+    let margen = rect.width() * 0.18;
+    let area = Rect::from_min_max(
+        Pos2::new(rect.left() + margen, rect.top() + alto * 0.28),
+        Pos2::new(rect.right() - margen, rect.top() + alto * 0.66),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(area, 14.0, Color32::from_rgba_unmultiplied(255, 255, 255, 90));
+    painter.rect_stroke(area, 14.0, egui::Stroke::new(2.0, TEXTO.gamma_multiply(0.25)), egui::StrokeKind::Inside);
+    // Cruz en el centro: la referencia contra la que se mide el alcance.
+    let centro = area.center();
+    let cruz = area.height() * 0.06;
+    let gris = TEXTO.gamma_multiply(0.3);
+    painter.line_segment(
+        [Pos2::new(centro.x - cruz, centro.y), Pos2::new(centro.x + cruz, centro.y)],
+        egui::Stroke::new(1.5, gris),
+    );
+    painter.line_segment(
+        [Pos2::new(centro.x, centro.y - cruz), Pos2::new(centro.x, centro.y + cruz)],
+        egui::Stroke::new(1.5, gris),
+    );
+
+    // El zorro sigue al COP en los dos ejes. La escala es el rango en uso
+    // (el por defecto mientras no haya calibración): sirve como referencia
+    // visual, no como medida.
+    let alto_zorro = (area.height() * 0.42).clamp(60.0, 190.0);
+    let pad = alto_zorro * 0.55;
+    let ml = entrada.rango.ml.normalizar(entrada.cop_ml, 1.0) as f32;
+    let ap = entrada.rango.ap.normalizar(entrada.cop_ap, 1.0) as f32;
+    let zorro =
+        Pos2::new(centro.x + ml * (area.width() / 2.0 - pad), centro.y - ap * (area.height() / 2.0 - pad * 0.6));
+    sprites.zorro.dibujar(ui, zorro, alto_zorro, 0, 0.0);
+
+    // La recompensa marca hacia dónde hay que ir. En el reposo no se pide
+    // ninguna dirección, así que no se dibuja.
+    if paso != Paso::Reposo {
+        let signo = paso.signo() as f32;
+        let meta = if paso.es_ml() {
+            Pos2::new(centro.x + signo * (area.width() / 2.0 - pad * 0.5), centro.y)
+        } else {
+            Pos2::new(centro.x, centro.y - signo * (area.height() / 2.0 - pad * 0.4))
+        };
+        sprites.gallina.dibujar(ui, meta, alto_zorro * 0.6, 0, 0.0);
+    }
+
+    const DORADO: Color32 = Color32::from_rgb(214, 160, 40);
+    let painter = ui.painter();
+    // Barra de lo que lleva del paso: tiempo quieto en el reposo, tiempo
+    // sosteniendo el alcance en el resto.
+    let ancho_barra = rect.width() * 0.34;
+    let barra = Rect::from_center_size(
+        Pos2::new(cx, rect.top() + alto * 0.74),
+        Vec2::new(ancho_barra, (alto * 0.022).clamp(10.0, 16.0)),
+    );
+    painter.rect_filled(barra, 6.0, TEXTO.gamma_multiply(0.15));
+    let llenado = Rect::from_min_size(barra.min, Vec2::new(barra.width() * cal.progreso(), barra.height()));
+    painter.rect_filled(llenado, 6.0, DORADO);
+
+    // Lectura en centímetros para el evaluador, que mira esta pantalla desde
+    // la vista clínica mientras el paciente se inclina.
+    if paso != Paso::Reposo {
+        painter.text(
+            Pos2::new(cx, rect.top() + alto * 0.81),
+            Align2::CENTER_CENTER,
+            format!("{:.1} cm", cal.alcance_actual_cm()),
+            egui::FontId::proportional((alto * 0.03).clamp(15.0, 24.0)),
+            TEXTO.gamma_multiply(0.7),
+        );
+    }
+
+    let cancelar = egui::Area::new(egui::Id::new("juego_cancelar_calibracion"))
+        .order(egui::Order::Foreground)
+        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -24.0))
+        .show(ui.ctx(), |ui| ui.button("Cancelar calibración").clicked())
+        .inner;
+
+    ui.ctx().request_repaint();
+    cancelar
+}
+
 /// Usa todo el `rect` disponible (mismo criterio que `dibujar_partida` y
 /// `dibujar_game_over`) en vez de apilar todo al medio de la ventana.
 fn dibujar_espera(ui: &mut Ui, sprite: &SpriteSheet, titulo: &str, detalle: &str) {
@@ -1368,17 +1578,7 @@ fn dibujar_espera(ui: &mut Ui, sprite: &SpriteSheet, titulo: &str, detalle: &str
     let cx = rect.center().x;
     let alto = rect.height();
 
-    let franjas = 24;
-    for i in 0..franjas {
-        let t0 = i as f32 / franjas as f32;
-        let t1 = (i + 1) as f32 / franjas as f32;
-        let color = lerp_color(CIELO_ARRIBA, CIELO_ABAJO, t0);
-        let franja = Rect::from_min_max(
-            Pos2::new(rect.left(), rect.top() + t0 * alto),
-            Pos2::new(rect.right(), rect.top() + t1 * alto),
-        );
-        painter.rect_filled(franja, 0.0, color);
-    }
+    fondo_cielo(painter, rect);
 
     let texto_centrado = |texto: &str, y_frac: f32, tamano: f32, color: Color32| {
         painter.text(
@@ -1604,6 +1804,7 @@ mod tests {
             cop_ap: 0.0,
             rango: RangoCalibrado::por_defecto(40.0, 40.0),
             exigencia: crate::rango::EXIGENCIA_DEFECTO,
+            semiejes_cm: [20.0, 20.0],
             conectado: true,
             en_plataforma: true,
             dt,
@@ -1786,6 +1987,36 @@ mod tests {
         }
 
         assert!(partida.fox_x.abs() < 0.01, "su reposo es el centro de la pista, quedó en {}", partida.fox_x);
+    }
+
+    #[test]
+    fn calibrar_descarta_la_partida_en_curso() {
+        // El primer paso es quedarse quieto: no se puede medir el reposo con
+        // rocas cayendo.
+        let mut estado = EstadoJuego { partida: Some(Partida::nueva(60.0)), ..Default::default() };
+
+        estado.iniciar_calibracion();
+
+        assert!(estado.calibrando());
+        assert!(estado.partida.is_none());
+    }
+
+    #[test]
+    fn el_resumen_avisa_cuando_el_rango_no_es_del_paciente() {
+        let mut estado = EstadoJuego::default();
+        assert!(estado.resumen_calibracion().starts_with("Sin calibrar"));
+
+        estado.calibracion = RangoCalibrado::medido(
+            crate::rango::Eje::nuevo(0.0, -4.0, 6.0, 20.0),
+            crate::rango::Eje::nuevo(0.0, -3.0, 7.0, 20.0),
+            crate::rango::Origen::Juego,
+        );
+        let resumen = estado.resumen_calibracion();
+        assert!(resumen.contains("4.0") && resumen.contains("6.0"), "resumen sin los alcances: {resumen}");
+
+        estado.calibracion = None;
+        estado.calibracion_fallida = true;
+        assert!(estado.resumen_calibracion().contains("no llegó al mínimo"));
     }
 
     #[test]

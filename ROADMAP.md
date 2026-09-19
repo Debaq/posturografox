@@ -153,7 +153,7 @@ ejercicio de límites.
   hay calibración (ML ±7 cm, AP +8/−4 cm, recortado a la plataforma), nunca
   el semieje, y marcado como "sin calibrar" para que el dato no se lea como
   clínico.
-- [ ] **R38 · Botón "Calibrar".** Calibración por sesión, manual, disponible en
+- [x] **R38 · Botón "Calibrar".** Calibración por sesión, manual, disponible en
   la pantalla de espera del juego y en la tarjeta JUEGO de la vista clínica.
   Reposo 3–5 s para `x0` y alcance sostenido a cada lado para los extremos,
   presentado con el zorro y una recompensa que se corre al borde: la

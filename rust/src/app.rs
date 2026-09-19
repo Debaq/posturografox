@@ -882,6 +882,7 @@ impl PosturografoxApp {
             cop_ap: self.ultimo_ap,
             rango: self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm),
             exigencia: rango::EXIGENCIA_DEFECTO,
+            semiejes_cm: [self.config.ancho_cm / 2.0, self.config.prof_cm / 2.0],
             conectado: self.conexion.is_some(),
             en_plataforma: self.ocupado,
             dt: ctx.input(|i| i.stable_dt),
@@ -1506,6 +1507,8 @@ impl PosturografoxApp {
         let juego_aparte = self.modo_juego && self.pantalla_juego.is_some();
         let pantalla_del_juego =
             self.pantalla_juego.and_then(|i| self.pantallas.actual().get(i).map(|p| p.etiqueta())).unwrap_or_default();
+        let mut calibrar_juego = false;
+        let resumen_rango = self.estado_juego.resumen_calibracion();
         tarjeta(ui, "JUEGO", ROSA_JUEGO, |ui| {
             if juego_aparte {
                 ui.label(format!("🎮 Jugando en {pantalla_del_juego}"));
@@ -1513,9 +1516,28 @@ impl PosturografoxApp {
             } else if ui.button("🎮 Modo juego").clicked() {
                 abrir_juego = true;
             }
+            ui.label(egui::RichText::new(resumen_rango).small());
+            if ui
+                .add_enabled(self.ocupado, egui::Button::new("Calibrar alcance"))
+                .on_hover_text(
+                    "Mide el reposo y hasta dónde llega el COP hacia cada lado, y escala el juego a eso. \
+                     Sin calibrar se usa un rango de referencia y el puntaje no vale como dato de la persona.",
+                )
+                .clicked()
+            {
+                calibrar_juego = true;
+            }
         });
         if abrir_juego {
             self.abrir_juego(ui.ctx());
+        }
+        if calibrar_juego {
+            self.estado_juego.iniciar_calibracion();
+            // La calibración se toma en la pantalla del juego: si no está
+            // abierta, el botón la abre en vez de no hacer nada visible.
+            if !self.modo_juego {
+                self.abrir_juego(ui.ctx());
+            }
         }
         if cerrar_juego {
             self.cerrar_juego();
