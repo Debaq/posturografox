@@ -449,6 +449,10 @@ pub struct PosturografoxApp {
     trazo_y: VecDeque<f64>,
     ultimo_ml: f64,
     ultimo_ap: f64,
+    /// Marca de tiempo de la última muestra, en el reloj del firmware. Es el
+    /// reloj con el que hay que estampar lo que se mida: el de los frames
+    /// depende del vsync.
+    ultimo_t: f64,
     ultimos_pct: [f64; 4], // % de carga por celda (fd,fi,bd,bi), para biofeedback en vivo
     /// Peso medido sobre la plataforma, en kg (0 si todavía no hay
     /// calibración con masa conocida).
@@ -560,6 +564,7 @@ impl Default for PosturografoxApp {
             trazo_y: VecDeque::with_capacity(MAX_PUNTOS_TRAZO),
             config,
             ultimo_ml: 0.0,
+            ultimo_t: 0.0,
             ultimo_ap: 0.0,
             ultimos_pct: [25.0; 4],
             peso_kg: 0.0,
@@ -869,6 +874,7 @@ impl PosturografoxApp {
         }
         self.ultimo_ml = cop_ml;
         self.ultimo_ap = cop_ap;
+        self.ultimo_t = m.t;
     }
 
     /// Datos que el juego necesita de la plataforma y de la configuración.
@@ -879,6 +885,7 @@ impl PosturografoxApp {
         juego::EntradaJuego {
             cop_ml: self.ultimo_ml,
             cop_ap: self.ultimo_ap,
+            t_muestra: self.ultimo_t,
             rango: self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm),
             exigencia: self.config.exigencia_juego,
             semiejes_cm: [self.config.ancho_cm / 2.0, self.config.prof_cm / 2.0],
@@ -2275,6 +2282,16 @@ mod tests {
             ]),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn el_juego_recibe_el_reloj_del_firmware_y_no_el_de_los_frames() {
+        let mut app = PosturografoxApp { ocupado: true, ..Default::default() };
+
+        app.procesar_muestra(Muestra { t: 12.5, crudos: [1000.0; 4], perdidas: 0 });
+
+        assert_eq!(app.ultimo_t, 12.5);
+        assert_eq!(app.entrada_juego(&egui::Context::default()).t_muestra, 12.5);
     }
 
     #[test]

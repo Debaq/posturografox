@@ -171,7 +171,7 @@ ejercicio de límites.
   juega, la partida deja de ser una condición medible y "aguantó 180 s"
   pierde sentido. La velocidad sigue rampeando como hoy; son dos ejes
   distintos (velocidad del cambio de carga vs. amplitud del desplazamiento).
-- [ ] **R41 · Reloj común.** Pasar el instante de muestra del firmware (`m.t`)
+- [x] **R41 · Reloj común.** Pasar el instante de muestra del firmware (`m.t`)
   dentro de `EntradaJuego`. Hoy el juego solo conoce `dt` de frame, y estampar
   los eventos con el reloj de render le mete ±8–16 ms de jitter de vsync a
   cada latencia. A 80 SPS el reloj del firmware da 12.5 ms de resolución.

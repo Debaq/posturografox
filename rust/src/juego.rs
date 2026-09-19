@@ -91,6 +91,13 @@ pub struct EntradaJuego {
     // Libre para usar (ej. saltar/agachar con AP) o ignorar; ver src/juego.rs.
     #[allow(dead_code)]
     pub cop_ap: f64,
+    /// Momento de la última muestra, en el reloj del firmware (80 SPS, o sea
+    /// 12.5 ms de resolución). Los eventos del juego se estampan con este
+    /// reloj y no con el de los frames: el de render arrastra el jitter del
+    /// vsync, que a 60 fps son ±8-16 ms metidos en cada latencia medida.
+    // Lo consume el registro de eventos de la partida (R42).
+    #[allow(dead_code)]
+    pub t_muestra: f64,
     /// Hasta dónde llega el COP de esta persona. Reemplaza al semieje de la
     /// plataforma, que no tenía nada que ver con lo que alguien puede
     /// desplazarse: ver `src/rango.rs`.
@@ -1813,6 +1820,7 @@ mod tests {
         EntradaJuego {
             cop_ml: 0.0,
             cop_ap: 0.0,
+            t_muestra: 0.0,
             rango: RangoCalibrado::por_defecto(40.0, 40.0),
             exigencia: crate::rango::EXIGENCIA_DEFECTO,
             semiejes_cm: [20.0, 20.0],
