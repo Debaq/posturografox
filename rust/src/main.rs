@@ -1,3 +1,4 @@
+mod almacenamiento;
 mod app;
 mod calibracion;
 mod config;
@@ -6,18 +7,21 @@ mod descubrimiento;
 mod espectro;
 mod estabilometria;
 mod exportar;
+mod fecha;
 mod filtro;
 mod historial;
 mod informe;
 mod juego;
 mod limites;
 mod maniobras;
+mod pacientes;
 mod pantallas;
 mod precarga;
 mod rango;
 mod serial_link;
 mod simulador;
 mod transporte;
+mod ui_pacientes;
 
 fn cargar_icono() -> egui::IconData {
     let bytes = include_bytes!("../../logo.jpeg");

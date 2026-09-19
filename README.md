@@ -11,6 +11,10 @@ confianza 95%, el desplazamiento medio-lateral / antero-posterior en el
 tiempo, métricas clásicas de estabilometría, el examen guiado CTSIB, un
 ejercicio de límites de estabilidad y un modo juego para rehabilitación.
 
+Los pacientes y sus exámenes viven en la **misma base que vHIT**: las dos
+aplicaciones son una suite y comparten una ficha por persona. Ver
+[Pacientes](#pacientes-la-base-compartida-de-la-suite).
+
 ## Compilar y ejecutar
 
 ```bash
@@ -61,6 +65,42 @@ cargo test          # tests de estabilometría, límites y exportación
 cargo clippy --all-targets
 cargo fmt
 ```
+
+## Pacientes: la base compartida de la suite
+
+El botón **👥 Pacientes** abre la ficha, el historial y la evolución del
+paciente. Es el mismo sistema de gestión que usa
+[vHIT](../vhit-wout-google), conectado a la **misma base de datos**: un
+paciente dado de alta en un equipo aparece en el otro, con su ficha, su fecha
+de nacimiento y sus notas. Lo que no se mezcla son los exámenes: vHIT lista
+sus impulsos y Posturografox sus ensayos de equilibrio, colgados de la misma
+persona.
+
+- **Dónde está la base.** `vhit.sqlite`, por defecto en
+  `~/.local/share/vhit` (`%APPDATA%\vhit` en Windows), que es la carpeta de
+  vHIT. Se puede cambiar desde la ventana (⚙ → *Dónde está la base*); lo
+  único que hay que hacer es que los dos programas apunten al mismo lugar.
+  La elección queda en `almacenamiento.ron`, en la carpeta de datos de la
+  app.
+- **Cifrado.** SQLCipher AES-256 por defecto. La frase de paso se pide al
+  abrir la base, no al arrancar el programa: probar el equipo, calibrar
+  celdas o jugar un rato no deberían exigir escribirla. No se guarda en
+  ningún lado, así que si se pierde los datos no se recuperan. Es la frase de
+  la base: la misma que abre vHIT.
+- **Qué se archiva.** Cada ensayo cerrado, cada partida y cada examen de
+  límites se guardan solos en la ficha del paciente elegido, con **la
+  configuración exacta con la que se midieron** (tamaño de plataforma,
+  filtro, duración), la versión de la app y el **COP crudo**. Por eso un
+  examen viejo se puede volver a mirar tal como se vio ese día, sin
+  repetírselo a nadie.
+- **Sin base abierta el programa funciona igual.** Sigue midiendo, exportando
+  CSV, imprimiendo informes y archivando en el historial local
+  (`historial.ronl`). La base es el registro clínico; el historial local es el
+  archivo que no necesita frase de paso.
+
+Las reglas de la convivencia de las dos aplicaciones en un mismo archivo
+—qué tabla es un contrato, qué pasa al borrar un paciente, qué versión de
+SQLCipher— están en [`vhit-wout-google/SUITE.md`](../vhit-wout-google/SUITE.md).
 
 ## Firmware
 

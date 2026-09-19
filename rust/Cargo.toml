@@ -13,6 +13,21 @@ rodio = "0.20.1"
 serde = { version = "1", features = ["derive"] }
 ron = "0.12.2"
 display-info = "0.5"
+# --- Suite: gestión de pacientes compartida con vHIT --------------------------
+# La base de pacientes es la MISMA que la de vhit (ver src/almacenamiento.rs),
+# así que SQLCipher tiene que ser el mismo: la versión de rusqlite fija la de
+# SQLCipher, y dos versiones distintas no abren el mismo archivo cifrado.
+rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher-vendored-openssl"] }
+# Tabla con encabezado fijo y filas perezosas para la lista de pacientes, y el
+# selector de fecha de nacimiento (feature `datepicker`).
+# `serde` va junto a `datepicker`: eframe está con `persistence`, así que egui
+# guarda su estado, y el del selector de fecha no compila sin serde.
+egui_extras = { version = "0.35", features = ["datepicker", "serde"] }
+# El selector de fecha de `egui_extras` trabaja sobre `jiff::civil::Date`, y de
+# jiff salen además la edad, el pasaje de UTC a hora local y el formato de las
+# marcas guardadas. Ya entra por `egui_extras`, pero acá se nombran sus tipos,
+# así que se declara.
+jiff = "0.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

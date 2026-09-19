@@ -44,6 +44,11 @@ pub struct Objetivo {
 /// Cómo le fue al paciente en una dirección: cuánto tardó y hasta dónde
 /// llegó. El alcance es lo que interesa clínicamente (el límite de
 /// estabilidad en esa dirección); el tiempo dice cuánto le costó.
+///
+/// Se serializa porque el examen de límites se archiva entero en la base de
+/// pacientes (ver `crate::pacientes`): la rosa de ocho direcciones no se
+/// resume en un número sin perder justo lo que se fue a medir.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Intento {
     /// Índice de la dirección (0 = adelante, en sentido horario).
     pub direccion: usize,

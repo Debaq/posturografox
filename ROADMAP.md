@@ -223,3 +223,48 @@ ejercicio de límites.
   resultado del examen, no un motivo para dejarlo colgado. Y el alcance que se
   informa se mide desde el reposo, así que el rango que hereda el juego (R39)
   ya no pierde el centro.
+
+## Fase 8 — Suite: una sola ficha de paciente
+
+Hasta acá el paciente era **una cadena de texto**. Cada sesión terminaba en una
+línea de `historial.ronl` con lo que se hubiera tipeado en el campo "Paciente /
+ID", y eso alcanza para probar el equipo y no para trabajar: "Juan Pérez", "juan
+perez" y "J. Pérez" son tres personas distintas para un archivo de texto, y
+ninguna tiene fecha de nacimiento, ni número de ficha, ni una nota de la vez
+anterior. Y el mismo paciente se estudia con el otro equipo del laboratorio
+(vHIT), donde hay que darlo de alta otra vez, con las mismas chances de que las
+dos fichas terminen diciendo cosas distintas.
+
+- [x] **R47 · Base de pacientes compartida con vHIT.** El sistema de gestión de
+  pacientes de vHIT traído acá y conectado a la **misma base**: `patient` es la
+  misma tabla, columna por columna, y cada programa agrega sus exámenes en sus
+  propias tablas colgadas de la misma ficha (`postura_examen` acá, `exam`/`trial`
+  allá). No hay copia ni sincronización: es un archivo. El contrato entre los dos
+  —qué no se puede renombrar, qué arrastra el borrado, qué versión de SQLCipher
+  tiene que coincidir— está escrito en `vhit-wout-google/SUITE.md`, y hay tests
+  que crean una base con el DDL de vHIT, la abren desde acá y verifican que sus
+  tablas quedan intactas. La carpeta por defecto es la de vHIT, así que en una
+  instalación normal no hay nada que configurar: el primero que arranque crea la
+  base y el segundo la encuentra hecha.
+- [x] **R48 · Cifrado en reposo, con la decisión a la vista.** SQLCipher AES-256
+  por defecto y frase de paso que no se guarda en ningún lado. Se puede elegir
+  dejar la base sin cifrar —es una decisión del responsable de los datos— y
+  entonces queda fechada en `almacenamiento.ron` y la ventana lo sigue diciendo
+  en rojo mientras esté así: una decisión de este tamaño no puede quedar tomada
+  una vez y olvidada. La base se abre desde la ventana de pacientes y no al
+  arrancar: pedir la frase para calibrar celdas o para jugar un rato sería
+  pedirla para todo.
+- [x] **R49 · El examen se archiva en la ficha, con el COP crudo y su
+  configuración.** Cada ensayo, cada partida y cada examen de límites van a la
+  base con las métricas, el registro de COP completo y la configuración con la
+  que se midieron. Un área de 95% sin el tamaño de la plataforma, el filtro y la
+  duración que la produjeron no es un dato, es un número; y con el COP guardado
+  un examen viejo se puede volver a mirar tal como se vio ese día. Los tres tipos
+  quedan distinguidos (`estatica`, `juego`, `limites`) porque sus métricas no son
+  comparables entre sí: la curva de evolución solo usa los ensayos quietos.
+- [x] **R50 · Un solo lugar donde dice quién es el paciente.** Con una ficha
+  elegida, el campo de texto libre desaparece y el identificador de los CSV, el
+  informe y el historial local sale de la ficha: dos lugares donde escribir el
+  nombre del paciente son dos lugares donde pueden decir cosas distintas. Sin
+  base abierta todo sigue funcionando como antes, con el campo de texto y el
+  historial local, que es el archivo que no necesita frase de paso.

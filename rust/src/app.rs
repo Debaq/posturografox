@@ -28,11 +28,13 @@ use crate::informe;
 use crate::juego;
 use crate::limites;
 use crate::maniobras;
+use crate::pacientes::{ExamenNuevo, TipoExamen};
 use crate::precarga::{Precarga, Recurso};
 use crate::rango;
 use crate::serial_link::{ConexionSerie, EventoSerie, Muestra, puertos_usables};
 use crate::simulador::Simulador;
 use crate::transporte::Transporte;
+use crate::ui_pacientes;
 
 /// Única fuente de verdad de la versión: la de `Cargo.toml`. Se muestra en el
 /// título de la ventana y en la barra de estado.
@@ -78,14 +80,14 @@ const MAX_MUESTRAS_TIEMPO: usize = 8_000;
 const MAX_PUNTOS_TRAZO: usize = 20_000;
 
 // ── Paleta: pasteles contrastantes sobre fondo claro (look clínico) ─────────
-const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML / conexión
-const NARANJA: Color32 = Color32::from_rgb(240, 165, 100); // curva AP / firmware
-const CORAL: Color32 = Color32::from_rgb(222, 118, 112); // punto COP actual / desconectar
-const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 95% / detección
-const VERDE: Color32 = Color32::from_rgb(120, 178, 140); // plataforma / calibración
+pub(crate) const AZUL: Color32 = Color32::from_rgb(90, 149, 210); // trazo COP / curva ML / conexión
+pub(crate) const NARANJA: Color32 = Color32::from_rgb(240, 165, 100); // curva AP / firmware
+pub(crate) const CORAL: Color32 = Color32::from_rgb(222, 118, 112); // punto COP actual / desconectar
+pub(crate) const LILA: Color32 = Color32::from_rgb(168, 146, 214); // elipse de confianza 95% / detección
+pub(crate) const VERDE: Color32 = Color32::from_rgb(120, 178, 140); // plataforma / calibración
 const GUIA: Color32 = Color32::from_gray(180); // líneas de referencia en 0,0
 const ROSA_JUEGO: Color32 = Color32::from_rgb(214, 130, 176); // acento del modo juego
-const AMARILLO: Color32 = Color32::from_rgb(216, 186, 90); // acento del ejercicio de límites de estabilidad
+pub(crate) const AMARILLO: Color32 = Color32::from_rgb(216, 186, 90); // acento del ejercicio de límites de estabilidad
 
 /// Las 4 condiciones del CTSIB en el orden clásico en que se suelen tomar.
 const PASOS_CTSIB: [(Superficie, Condicion); 4] = [
@@ -493,7 +495,18 @@ pub struct PosturografoxApp {
     ultima_superficie: Superficie,
 
     // Examen: identificación + condición/superficie (CTSIB: las 4 combinaciones)
+    /// Identificador del paciente para los CSV, el informe y el historial
+    /// local. Con la base de la suite abierta lo escribe la ficha elegida y
+    /// deja de tipearse a mano (ver `sincronizar_paciente`).
     paciente: String,
+    /// Gestión de pacientes de la suite: la ficha y el historial en la MISMA
+    /// base que vHIT (ver src/ui_pacientes y src/pacientes). Mientras nadie la
+    /// abra, el programa mide y archiva como siempre en `historial.ronl`.
+    pacientes: ui_pacientes::Pacientes,
+    mostrar_pacientes: bool,
+    /// Si el examen de límites que está en pantalla ya se archivó en la base.
+    /// Sin esto se guardaría de nuevo en cada frame mientras quede completo.
+    limites_archivados: bool,
     condicion: Condicion,
     superficie: Superficie,
     resultados_ctsib: HashMap<(Superficie, Condicion), MetricasBalance>,
@@ -592,6 +605,9 @@ impl Default for PosturografoxApp {
             ultima_superficie: Superficie::default(),
 
             paciente: String::new(),
+            pacientes: ui_pacientes::Pacientes::default(),
+            mostrar_pacientes: false,
+            limites_archivados: false,
             condicion: Condicion::default(),
             superficie: Superficie::default(),
             resultados_ctsib: HashMap::new(),
@@ -754,6 +770,9 @@ impl PosturografoxApp {
             }
         }
         self.ultimo_registro = registro;
+        if let Some(m) = metricas {
+            self.archivar_en_base(TipoExamen::Estatica, Some(m), None, Vec::new(), self.ultimo_registro.clone());
+        }
         self.reiniciar_sesion();
         self.ejercicio.detener();
     }
@@ -986,11 +1005,16 @@ impl PosturografoxApp {
             resumen: maniobras::resumir(&medidas),
         };
         self.ultima_partida = Some(juego.clone());
-        let sesion = historial::Sesion::de_juego(&self.paciente, self.superficie, metricas, juego);
+        let sesion = historial::Sesion::de_juego(&self.paciente, self.superficie, metricas, juego.clone());
         match historial::agregar(&sesion) {
             Ok(()) => self.historial.push(sesion),
             Err(e) => self.estado = format!("No se pudo archivar la partida: {e}"),
         }
+        // En la base la partida va con el tramo de COP que le corresponde: es lo
+        // que permite volver a medir sus maniobras sin repetir la sesión.
+        self.ultima_superficie = self.superficie;
+        self.ultima_condicion = Condicion::OjosAbiertos;
+        self.archivar_en_base(TipoExamen::Juego, Some(metricas), Some(juego), Vec::new(), tramo);
         self.registro_juego.retain(|m| m[0] > resultado.t_fin_s);
     }
 
@@ -1251,6 +1275,13 @@ impl PosturografoxApp {
             {
                 self.mostrar_config = !self.mostrar_config;
             }
+            if ui
+                .button("👥 Pacientes")
+                .on_hover_text("Ficha, historial y evolución. Es la misma base de pacientes que usa vHIT.")
+                .clicked()
+            {
+                self.mostrar_pacientes = !self.mostrar_pacientes;
+            }
             if ui.button("📈 Historial").clicked() {
                 self.historial = historial::cargar();
                 self.mostrar_historial = !self.mostrar_historial;
@@ -1316,7 +1347,37 @@ impl PosturografoxApp {
 
     fn tarjetas_examen(&mut self, ui: &mut egui::Ui) {
         tarjeta(ui, "PACIENTE", LILA, |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.paciente).hint_text("Paciente / ID").desired_width(140.0));
+            // Con una ficha elegida en la base, el campo de texto desaparece: el
+            // nombre lo dice la ficha, y dos lugares donde escribir quién es el
+            // paciente son dos lugares donde pueden decir cosas distintas.
+            match self.pacientes.paciente() {
+                Some(p) => {
+                    let etiqueta = p.etiqueta();
+                    let edad = crate::fecha::edad(&p.nacimiento, crate::fecha::hoy());
+                    ui.label(egui::RichText::new(etiqueta).strong().color(LILA.gamma_multiply(0.85)));
+                    if let Some(anios) = edad {
+                        ui.label(egui::RichText::new(format!("{anios} años")).small());
+                    }
+                    if ui.button("👥 Cambiar").clicked() {
+                        self.mostrar_pacientes = true;
+                    }
+                }
+                None => {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.paciente).hint_text("Paciente / ID").desired_width(120.0),
+                    );
+                    if ui
+                        .button("👥 Elegir ficha")
+                        .on_hover_text(
+                            "Abre la base de pacientes de la suite. Sin ficha elegida, el examen \
+                             queda solo en el historial local y en el CSV.",
+                        )
+                        .clicked()
+                    {
+                        self.mostrar_pacientes = true;
+                    }
+                }
+            }
             let hay_datos = !self.ultimo_registro.is_empty();
             if ui.add_enabled(hay_datos, egui::Button::new("Exportar CSV")).clicked() {
                 self.exportar_sesion();
@@ -1669,6 +1730,101 @@ impl PosturografoxApp {
         }
     }
 
+    /// El identificador del paciente elegido en la base, tal como se usa para
+    /// nombrar archivos y agrupar el historial local.
+    ///
+    /// La ficha antes que el nombre: es más corta, no tiene acentos ni espacios
+    /// y es lo que la institución ya usa para identificar a la persona.
+    fn identificador_de(paciente: &crate::pacientes::Paciente) -> String {
+        if paciente.ficha.trim().is_empty() {
+            paciente.nombre.trim().to_string()
+        } else {
+            paciente.ficha.trim().to_string()
+        }
+    }
+
+    /// Mientras haya una ficha elegida en la base, ella manda sobre el campo de
+    /// texto: si los dos pudieran decir cosas distintas, el CSV y la base
+    /// terminarían atribuyendo el mismo examen a dos personas.
+    fn sincronizar_paciente(&mut self) {
+        if let Some(p) = self.pacientes.paciente() {
+            let id = Self::identificador_de(p);
+            if self.paciente != id {
+                self.paciente = id;
+            }
+        }
+    }
+
+    /// Cómo se nombra al paciente en el informe imprimible: el nombre completo
+    /// con su ficha y su edad si están en la base, o lo que se haya tipeado.
+    fn paciente_para_informe(&self) -> String {
+        let Some(p) = self.pacientes.paciente() else { return self.paciente.clone() };
+        match crate::fecha::edad(&p.nacimiento, crate::fecha::hoy()) {
+            Some(anios) => format!("{} · {anios} años", p.etiqueta()),
+            None => p.etiqueta(),
+        }
+    }
+
+    /// Archiva en la base de la suite lo que se acaba de medir.
+    ///
+    /// No reemplaza a `historial.ronl`: ese sigue escribiéndose siempre, porque
+    /// es el archivo que funciona sin base, sin frase de paso y sin que nadie
+    /// haya elegido una ficha. La base es el registro clínico —el que comparte
+    /// la ficha con vHIT y guarda el COP crudo—, y solo puede escribirse cuando
+    /// hay alguien elegido a quien atribuirle el examen.
+    fn archivar_en_base(
+        &mut self,
+        tipo: TipoExamen,
+        metricas: Option<MetricasBalance>,
+        juego: Option<historial::DatosJuego>,
+        limites: Vec<limites::Intento>,
+        registro: Vec<[f64; 3]>,
+    ) {
+        if !self.pacientes.puede_archivar() {
+            return;
+        }
+        let Some(paciente_id) = self.pacientes.paciente_id() else { return };
+        let examen = ExamenNuevo {
+            paciente_id,
+            operador: self.pacientes.operador.clone(),
+            tipo,
+            superficie: self.ultima_superficie,
+            condicion: self.ultima_condicion,
+            metricas,
+            config: self.config.clone(),
+            juego,
+            limites,
+            notas: String::new(),
+            registro,
+        };
+        match self.pacientes.archivar(&examen) {
+            Ok(id) => self.estado = format!("{} archivado en la ficha (examen #{id})", tipo.etiqueta()),
+            Err(e) => self.estado = format!("No se pudo archivar en la base: {e}"),
+        }
+    }
+
+    /// Archiva el examen de límites en cuanto queda completo, una sola vez.
+    ///
+    /// Los otros exámenes tienen un momento claro en que terminan —el paciente
+    /// se baja de la plataforma—; este se completa cuando se anotó la última de
+    /// las ocho direcciones y queda en pantalla para leerlo, así que el momento
+    /// de guardarlo hay que detectarlo.
+    fn archivar_limites_si_termino(&mut self) {
+        if !self.ejercicio.activo() {
+            // Se detuvo o se reinició: el próximo que se complete es otro examen.
+            self.limites_archivados = false;
+            return;
+        }
+        if !self.ejercicio.completo() || self.limites_archivados || !self.pacientes.puede_archivar() {
+            return;
+        }
+        self.limites_archivados = true;
+        let intentos = self.ejercicio.intentos.clone();
+        // Sin métricas de oscilación y sin COP: lo que mide este examen es el
+        // alcance por dirección, y eso es lo que se guarda.
+        self.archivar_en_base(TipoExamen::Limites, None, None, intentos, Vec::new());
+    }
+
     fn exportar_sesion(&mut self) {
         let Some(metricas) = self.ultima_sesion else {
             self.estado = "No hay una sesión completa para exportar".to_string();
@@ -1994,8 +2150,9 @@ impl PosturografoxApp {
         let fecha = fecha_legible(
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or_default(),
         );
+        let paciente = self.paciente_para_informe();
         let datos = informe::DatosInforme {
-            paciente: &self.paciente,
+            paciente: &paciente,
             fecha: &fecha,
             superficie: self.ultima_superficie,
             condicion: self.ultima_condicion,
@@ -2233,7 +2390,10 @@ impl PosturografoxApp {
     /// Si no hay nada guardado (primer arranque) o el archivo no se puede
     /// leer, se queda con los valores de fábrica en vez de fallar.
     pub fn nueva(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut app = Self::default();
+        // Dónde está la base de la suite y si está cifrada se lee del disco acá
+        // y no en `Default`: los tests construyen la aplicación entera y no
+        // tienen por qué ir a buscar la configuración del equipo.
+        let mut app = Self { pacientes: ui_pacientes::Pacientes::nueva(), ..Self::default() };
         if let Some(almacen) = cc.storage
             && let Some(guardada) = eframe::get_value::<Config>(almacen, config::CLAVE_ALMACEN)
         {
@@ -2372,6 +2532,12 @@ impl eframe::App for PosturografoxApp {
         crate::config::ventana(ui.ctx(), &mut self.config, &mut self.mostrar_config, VERDE);
         self.ventana_calibracion(ui.ctx());
         self.ventana_historial(ui.ctx());
+        self.pacientes.ui(ui.ctx(), &mut self.mostrar_pacientes);
+        // Después de la ventana: si ahí se eligió otra ficha, el identificador
+        // que usan el CSV, el informe y el historial local cambia en este mismo
+        // frame y no en el siguiente.
+        self.sincronizar_paciente();
+        self.archivar_limites_si_termino();
 
         egui::CentralPanel::default().frame(fondo(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
             let alto_total = ui.available_height();
@@ -2396,7 +2562,7 @@ impl eframe::App for PosturografoxApp {
 }
 
 /// Una línea con lo que dejó una partida, para el listado del historial.
-fn resumen_partida(juego: &historial::DatosJuego) -> String {
+pub(crate) fn resumen_partida(juego: &historial::DatosJuego) -> String {
     let cabecera = format!(
         "{:.0} s · exigencia {:.0}% · {}",
         juego.duracion_s,
