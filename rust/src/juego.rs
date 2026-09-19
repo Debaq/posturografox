@@ -143,6 +143,12 @@ const CIELO_ABAJO: Color32 = Color32::from_rgb(255, 214, 224);
 const TEXTO: Color32 = Color32::from_rgb(70, 55, 60);
 const ROJO_GOLPE: Color32 = Color32::from_rgb(210, 90, 85);
 
+/// Cuánto antes del contacto una roca empieza a exigir respuesta. Se define
+/// como tiempo y no como distancia porque la velocidad de la partida rampea:
+/// a distancia fija la ventana de reacción se iría achicando sola y la
+/// latencia medida terminaría contando la aceleración del juego.
+const ZONA_REACCION_S: f32 = 1.2;
+
 const VELOCIDAD_INICIAL: f32 = 230.0;
 const VELOCIDAD_MAX: f32 = 680.0;
 const ACELERACION: f32 = 12.0; // px/s por cada segundo jugado
@@ -460,12 +466,50 @@ fn guardar_mejor_puntaje(valor: f32) {
 /// Un obstáculo cayendo. `x` y `ancho_frac` están normalizados a la pista
 /// jugable (0.0 = borde izquierdo, 1.0 = borde derecho) para que el juego
 /// se adapte solo si se redimensiona la ventana.
+#[derive(Default)]
 struct Obstaculo {
     x_frac: f32,
     ancho_frac: f32,
     y_px: f32,
     esquivado: bool,
     variante: usize,
+    /// Cuándo apareció, en el reloj del firmware.
+    t_aparicion_s: f64,
+    /// Cuándo entró en zona de reacción, si ya entró.
+    t_zona_s: Option<f64>,
+    /// Dónde estaba el zorro en ese momento, y hacia dónde había que ir.
+    fox_en_zona: f32,
+    lado_exigido: f32,
+    /// Hubo un congelamiento por golpe mientras esta roca estaba en juego.
+    congelado: bool,
+}
+
+/// Una roca vivida de punta a punta: cuándo apareció, cuándo empezó a exigir
+/// una respuesta y cómo terminó.
+///
+/// Cada roca es un ensayo de desplazamiento de carga con dirección conocida,
+/// así que de una partida salen decenas de maniobras medidas. Cruzados con el
+/// COP que la app graba en paralelo, estos eventos son lo que convierte al
+/// juego en estímulo de una medición y no en un puntaje suelto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+// Lo consumen las métricas de maniobra (R43) y el archivo de la partida (R44).
+#[allow(dead_code)]
+pub struct EventoRoca {
+    pub t_aparicion_s: f64,
+    /// Instante del estímulo: desde acá se mide la latencia de reacción.
+    pub t_zona_s: f64,
+    pub t_resultado_s: f64,
+    /// Centro de la roca en coordenadas de pista (-1.0 izq .. 1.0 der).
+    pub x_roca: f32,
+    /// Dónde estaba el zorro cuando la roca entró en zona.
+    pub fox_en_zona: f32,
+    /// Hacia dónde había que moverse: -1.0 izquierda, 1.0 derecha, 0.0 si el
+    /// paciente ya estaba a salvo y la roca no exigía nada.
+    pub lado_exigido: f32,
+    pub golpeo: bool,
+    /// La ventana de reacción cayó dentro de un congelamiento por golpe, así
+    /// que la respuesta no es comparable con las demás.
+    pub congelado: bool,
 }
 
 /// Bicho atrapable: qué sprite usa, cuántos puntos suma y a qué tamaño
@@ -695,6 +739,11 @@ struct Partida {
     gano: bool,
     /// Polvito bajo las patas del zorro mientras corre (solo estético).
     particulas: Vec<Particula>,
+    /// Cada roca ya resuelta, con sus tiempos. Es el registro que después se
+    /// cruza con el COP grabado para sacar latencias y amplitudes.
+    // Lo consumen las métricas de maniobra (R43) y el archivo (R44).
+    #[allow(dead_code)]
+    eventos: Vec<EventoRoca>,
     temporizador_polvo: f32,
     rng: Rng,
 }
@@ -741,6 +790,7 @@ impl Partida {
             duracion_s,
             gano: false,
             particulas: Vec::new(),
+            eventos: Vec::new(),
             temporizador_polvo: 0.0,
             rng: Rng::nueva(),
         }
@@ -1097,6 +1147,33 @@ impl Escenario {
         Rect::from_center_size(Pos2::new(self.x_de_frac(obstaculo.x_frac), obstaculo.y_px), tamano)
     }
 
+    /// Hacia dónde tiene que moverse el zorro para esquivar esta roca:
+    /// -1.0 izquierda, 1.0 derecha, 0.0 si desde donde está ya pasa limpio.
+    ///
+    /// Se aleja de la roca, salvo que de ese lado no quepa: ahí la salida es
+    /// el lado con más espacio libre.
+    fn lado_para_esquivar(&self, obstaculo: &Obstaculo, fox_x: f32) -> f32 {
+        let roca = self.rect_obstaculo(obstaculo);
+        let x_zorro = self.x_zorro(fox_x);
+        let radio = self.radio_zorro();
+        if (x_zorro - roca.center().x).abs() > roca.width() / 2.0 + radio {
+            return 0.0; // ya está fuera de la trayectoria de la roca
+        }
+        let espacio_izq = roca.left() - MARGEN_PISTA;
+        let espacio_der = (self.ancho - MARGEN_PISTA) - roca.right();
+        let necesario = radio * 2.0;
+        let hacia_izquierda = roca.center().x >= x_zorro;
+        if hacia_izquierda && espacio_izq >= necesario {
+            -1.0
+        } else if !hacia_izquierda && espacio_der >= necesario {
+            1.0
+        } else if espacio_izq > espacio_der {
+            -1.0
+        } else {
+            1.0
+        }
+    }
+
     /// Alto y aspecto con que se dibuja una recompensa.
     fn tamano_recompensa(&self, tipo: TipoRecompensa) -> Vec2 {
         let alto = self.alto_zorro() * tipo.escala_alto();
@@ -1185,13 +1262,38 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego, escenario: &Escenar
         let ancho_frac = partida.rng.rango(0.06, 0.13);
         let x_frac = partida.rng.rango(ancho_frac / 2.0, 1.0 - ancho_frac / 2.0);
         let variante = (partida.rng.rango(0.0, ROCAS_COLUMNAS as f32) as usize).min(ROCAS_COLUMNAS as usize - 1);
-        partida.obstaculos.push(Obstaculo { x_frac, ancho_frac, y_px: -40.0, esquivado: false, variante });
+        partida.obstaculos.push(Obstaculo {
+            x_frac,
+            ancho_frac,
+            y_px: -40.0,
+            esquivado: false,
+            variante,
+            t_aparicion_s: entrada.t_muestra,
+            t_zona_s: None,
+            fox_en_zona: 0.0,
+            lado_exigido: 0.0,
+            congelado: false,
+        });
         let intervalo_base = (INTERVALO_SPAWN_INICIAL - partida.tiempo * 0.02).max(INTERVALO_SPAWN_MIN);
         partida.temporizador_spawn = intervalo_base + partida.rng.rango(-0.15, 0.2);
     }
 
     for obstaculo in &mut partida.obstaculos {
         obstaculo.y_px += partida.velocidad * dt;
+    }
+    // Una roca entra en zona de reacción cuando le falta `ZONA_REACCION_S`
+    // para alcanzar al zorro. Ese instante es el estímulo: lo que el paciente
+    // haga a partir de ahí es la maniobra que se mide.
+    for obstaculo in &mut partida.obstaculos {
+        if obstaculo.t_zona_s.is_some() || obstaculo.esquivado {
+            continue;
+        }
+        let distancia = escenario.y_zorro() - obstaculo.y_px;
+        if distancia >= 0.0 && distancia <= partida.velocidad * ZONA_REACCION_S {
+            obstaculo.t_zona_s = Some(entrada.t_muestra);
+            obstaculo.fox_en_zona = partida.fox_x;
+            obstaculo.lado_exigido = escenario.lado_para_esquivar(obstaculo, partida.fox_x);
+        }
     }
     partida.obstaculos.retain(|o| o.y_px < 4000.0);
 
@@ -1226,26 +1328,28 @@ fn actualizar(partida: &mut Partida, entrada: &EntradaJuego, escenario: &Escenar
     }
     partida.particulas.retain(|p| p.vida > 0.0);
 
-    resolver_colisiones(partida, escenario, &mut sonidos);
+    resolver_colisiones(partida, escenario, entrada.t_muestra, &mut sonidos);
     sonidos
 }
 
 /// Choques con rocas y recolección de recompensas. Antes vivía dentro de la
 /// función de dibujo, así que la física dependía del tamaño de la ventana y no
 /// se podía testear sin levantar la UI.
-fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, sonidos: &mut Vec<Sonido>) {
+fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, t_muestra: f64, sonidos: &mut Vec<Sonido>) {
     let centro_zorro = Pos2::new(escenario.x_zorro(partida.fox_x), escenario.y_zorro());
     let radio = escenario.radio_zorro();
     let alto_zorro = escenario.alto_zorro();
 
     let mut golpe_mortal = false;
     let mut vidas_consumidas = 0usize;
+    let mut eventos = Vec::new();
     for obstaculo in &mut partida.obstaculos {
         if obstaculo.esquivado {
             continue;
         }
         let roca = escenario.rect_obstaculo(obstaculo);
-        if circulo_rect_colisiona(centro_zorro, radio, roca) {
+        let golpeo = circulo_rect_colisiona(centro_zorro, radio, roca);
+        if golpeo {
             obstaculo.esquivado = true; // esta roca ya no puede golpear de nuevo
             if partida.vidas.len() > vidas_consumidas {
                 vidas_consumidas += 1;
@@ -1255,6 +1359,31 @@ fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, sonidos: &m
         } else if roca.top() > centro_zorro.y + alto_zorro * 0.5 {
             obstaculo.esquivado = true;
             partida.puntaje += 25.0;
+        }
+        // La roca se resolvió en este frame: queda registrada la maniobra.
+        if obstaculo.esquivado
+            && let Some(t_zona_s) = obstaculo.t_zona_s
+        {
+            eventos.push(EventoRoca {
+                t_aparicion_s: obstaculo.t_aparicion_s,
+                t_zona_s,
+                t_resultado_s: t_muestra,
+                x_roca: obstaculo.x_frac * 2.0 - 1.0,
+                fox_en_zona: obstaculo.fox_en_zona,
+                lado_exigido: obstaculo.lado_exigido,
+                golpeo,
+                congelado: obstaculo.congelado,
+            });
+        }
+    }
+    partida.eventos.append(&mut eventos);
+    // Un golpe congela el juego: las rocas que quedaron a mitad de camino ya
+    // no midieron una reacción comparable con las demás.
+    if vidas_consumidas > 0 || golpe_mortal {
+        for obstaculo in &mut partida.obstaculos {
+            if !obstaculo.esquivado {
+                obstaculo.congelado = true;
+            }
         }
     }
     for _ in 0..vidas_consumidas {
@@ -1840,7 +1969,7 @@ mod tests {
     fn roca_sobre_el_zorro(partida: &Partida, esc: &Escenario) -> Obstaculo {
         let x_zorro = esc.x_zorro(partida.fox_x);
         let x_frac = (x_zorro - MARGEN_PISTA) / esc.ancho_pista();
-        Obstaculo { x_frac, ancho_frac: 0.1, y_px: esc.y_zorro(), esquivado: false, variante: 0 }
+        Obstaculo { x_frac, ancho_frac: 0.1, y_px: esc.y_zorro(), ..Default::default() }
     }
 
     #[test]
@@ -1916,8 +2045,7 @@ mod tests {
             x_frac: 0.05,
             ancho_frac: 0.06,
             y_px: esc.y_zorro() + esc.alto_zorro(),
-            esquivado: false,
-            variante: 0,
+            ..Default::default()
         });
         let puntaje_previo = partida.puntaje;
 
@@ -2006,6 +2134,104 @@ mod tests {
         }
 
         assert!(partida.fox_x.abs() < 0.01, "su reposo es el centro de la pista, quedó en {}", partida.fox_x);
+    }
+
+    /// Corre la partida hasta que la roca de `x_frac` se resuelve y devuelve
+    /// su evento. El reloj del firmware arranca en 100 s a propósito: si algo
+    /// usara el acumulado de frames en vez de `t_muestra`, los tiempos del
+    /// evento no darían.
+    fn evento_de_una_roca(x_frac: f32) -> EventoRoca {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.temporizador_spawn = 1_000.0; // sin rocas nuevas que ensucien
+        partida.temporizador_recompensa = 1_000.0;
+        partida.obstaculos.push(Obstaculo { x_frac, ancho_frac: 0.1, y_px: -esc.alto * 0.5, ..Default::default() });
+        let mut e = entrada(0.01);
+        for i in 0..10_000 {
+            e.t_muestra = 100.0 + f64::from(i) * 0.01;
+            actualizar(&mut partida, &e, &esc);
+            if let Some(evento) = partida.eventos.first() {
+                return *evento;
+            }
+        }
+        panic!("la roca nunca se resolvió");
+    }
+
+    #[test]
+    fn cada_roca_deja_registrado_cuando_exigio_y_como_termino() {
+        // Roca por el medio, donde arranca el zorro: exige moverse.
+        let evento = evento_de_una_roca(0.5);
+
+        assert!(evento.t_zona_s >= 100.0, "los tiempos salen del reloj del firmware");
+        assert!(evento.t_zona_s > evento.t_aparicion_s, "primero aparece y después exige");
+        assert!(evento.t_resultado_s > evento.t_zona_s, "y después se resuelve");
+        assert_ne!(evento.lado_exigido, 0.0, "encima del zorro, hay que moverse");
+        assert!(!evento.congelado);
+        assert!((evento.x_roca).abs() < 1e-6, "el centro de la pista es el 0");
+    }
+
+    #[test]
+    fn la_roca_que_aparece_se_estampa_con_el_reloj_del_firmware() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.temporizador_spawn = 0.0;
+        let mut e = entrada(0.01);
+        e.t_muestra = 250.0;
+
+        actualizar(&mut partida, &e, &esc);
+
+        let roca = partida.obstaculos.first().expect("el temporizador en cero hace aparecer una roca");
+        assert_eq!(roca.t_aparicion_s, 250.0);
+    }
+
+    #[test]
+    fn una_roca_que_cae_lejos_no_exige_maniobra() {
+        // El zorro arranca centrado: una roca pegada al borde no lo obliga a
+        // nada, y eso queda anotado para no contarla como maniobra.
+        let evento = evento_de_una_roca(0.95);
+        assert_eq!(evento.lado_exigido, 0.0);
+    }
+
+    /// Distancia a la que la roca entró en zona, y a qué velocidad iba.
+    fn distancia_de_zona(tiempo_partida: f32) -> (f32, f32) {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.tiempo = tiempo_partida;
+        partida.temporizador_spawn = 1_000.0;
+        partida.temporizador_recompensa = 1_000.0;
+        let velocidad = (VELOCIDAD_INICIAL + tiempo_partida * ACELERACION).min(VELOCIDAD_MAX);
+        partida.obstaculos.push(Obstaculo {
+            x_frac: 0.5,
+            ancho_frac: 0.1,
+            y_px: esc.y_zorro() - velocidad * ZONA_REACCION_S * 1.3,
+            ..Default::default()
+        });
+        let mut e = entrada(0.005);
+        for i in 0..10_000 {
+            e.t_muestra = f64::from(i) * 0.005;
+            actualizar(&mut partida, &e, &esc);
+            let obstaculo = partida.obstaculos.first().expect("la roca sigue en juego");
+            if obstaculo.t_zona_s.is_some() {
+                return (esc.y_zorro() - obstaculo.y_px, partida.velocidad);
+            }
+        }
+        panic!("la roca nunca entró en zona");
+    }
+
+    #[test]
+    fn la_zona_de_reaccion_mide_tiempo_y_no_distancia() {
+        // La velocidad de la partida rampea. Si la zona fuera una distancia
+        // fija, la ventana de reacción se iría achicando sola y la latencia
+        // medida al minuto 3 no se podría comparar con la del minuto 1.
+        let (distancia_lenta, velocidad_lenta) = distancia_de_zona(0.0);
+        let (distancia_rapida, velocidad_rapida) = distancia_de_zona(60.0);
+
+        assert!(velocidad_rapida > velocidad_lenta * 1.2, "el caso de prueba necesita dos velocidades distintas");
+        assert!(distancia_rapida > distancia_lenta * 1.2, "a más velocidad, la zona empieza más lejos");
+        for (distancia, velocidad) in [(distancia_lenta, velocidad_lenta), (distancia_rapida, velocidad_rapida)] {
+            let ventana = distancia / velocidad;
+            assert!((ventana - ZONA_REACCION_S).abs() < 0.05, "la ventana quedó en {ventana} s");
+        }
     }
 
     #[test]

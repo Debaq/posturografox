@@ -175,7 +175,7 @@ ejercicio de límites.
   dentro de `EntradaJuego`. Hoy el juego solo conoce `dt` de frame, y estampar
   los eventos con el reloj de render le mete ±8–16 ms de jitter de vsync a
   cada latencia. A 80 SPS el reloj del firmware da 12.5 ms de resolución.
-- [ ] **R42 · Registro de eventos del juego.** Por cada roca: instante de
+- [x] **R42 · Registro de eventos del juego.** Por cada roca: instante de
   aparición, lado que exige, instante en que entra en zona de reacción y
   resultado (esquivó / golpeó). La zona se define por **tiempo al contacto**
   (~1.2 s a la velocidad de ese instante), no por distancia fija: con la
