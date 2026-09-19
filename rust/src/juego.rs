@@ -784,6 +784,16 @@ impl EstadoJuego {
         self.partida = None;
     }
 
+    /// Toma un rango medido en otro lado (el ejercicio de límites) sin pisar
+    /// una calibración hecha en el juego: esa mide el reposo del paciente y
+    /// corrige el descentrado, así que es la mejor de las dos.
+    pub fn adoptar_rango(&mut self, rango: RangoCalibrado) {
+        if self.calibracion.is_none_or(|actual| actual.origen != crate::rango::Origen::Juego) {
+            self.calibracion = Some(rango);
+            self.calibracion_fallida = false;
+        }
+    }
+
     pub fn calibrando(&self) -> bool {
         self.calibrando.is_some()
     }
@@ -793,7 +803,8 @@ impl EstadoJuego {
     pub fn resumen_calibracion(&self) -> String {
         match self.calibracion {
             Some(r) => format!(
-                "Calibrado · ML {:.1}/{:.1} cm · AP {:.1}/{:.1} cm",
+                "Calibrado ({}) · ML {:.1}/{:.1} cm · AP {:.1}/{:.1} cm",
+                r.origen.etiqueta(),
                 r.ml.alcance_negativo_cm(),
                 r.ml.alcance_positivo_cm(),
                 r.ap.alcance_negativo_cm(),

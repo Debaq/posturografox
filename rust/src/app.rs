@@ -2184,6 +2184,11 @@ impl eframe::App for PosturografoxApp {
         if self.ocupado {
             let dt = ui.input(|i| i.stable_dt);
             self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, self.config.ancho_cm, self.config.prof_cm, dt);
+            // El examen de límites ya mide hasta dónde llega esta persona: el
+            // juego lo aprovecha en vez de pedir otra calibración.
+            if let Some(rango) = self.ejercicio.rango_calibrado(self.config.ancho_cm, self.config.prof_cm) {
+                self.estado_juego.adoptar_rango(rango);
+            }
         }
 
         let lienzo = ui.visuals().panel_fill;

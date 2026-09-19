@@ -56,6 +56,18 @@ pub enum Origen {
     Defecto,
 }
 
+impl Origen {
+    /// De dónde salió el rango, para la tarjeta JUEGO: una partida jugada con
+    /// el rango por defecto no es un dato de la persona.
+    pub fn etiqueta(self) -> &'static str {
+        match self {
+            Origen::Limites => "límites de estabilidad",
+            Origen::Juego => "calibración del juego",
+            Origen::Defecto => "sin calibrar",
+        }
+    }
+}
+
 /// Alcance en un eje: el centro de reposo y los dos extremos, en cm de COP.
 ///
 /// Los dos extremos se guardan por separado, en vez de un único radio, porque

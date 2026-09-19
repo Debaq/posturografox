@@ -6,6 +6,8 @@
 
 use std::f64::consts::TAU;
 
+use crate::rango::{Eje, Origen, RangoCalibrado};
+
 /// Objetivos repartidos en círculo (N, NE, E, SE, S, SO, O, NO).
 pub const DIRECCIONES: usize = 8;
 
@@ -137,6 +139,28 @@ impl EjercicioLimites {
         }
     }
 
+    /// Rango de desplazamiento del paciente sacado de este ejercicio, para
+    /// que el modo juego no tenga que pedir una calibración aparte cuando el
+    /// examen clínico ya la midió.
+    ///
+    /// Solo usa las cuatro direcciones cardinales: son las que caen sobre los
+    /// ejes ML y AP. El centro queda en cero porque el ejercicio no mide
+    /// reposo —proyecta desde el origen de la plataforma—, así que la
+    /// calibración del propio juego sigue siendo la que mejor corrige a quien
+    /// carga asimétrico.
+    pub fn rango_calibrado(&self, ancho_cm: f64, prof_cm: f64) -> Option<RangoCalibrado> {
+        let alcance =
+            |direccion: usize| self.intentos.iter().find(|i| i.direccion == direccion).map(|i| i.alcance_cm.max(0.0));
+        // Orden de `NOMBRES`: 0 = N (adelante), 2 = E (derecha), 4 = S
+        // (atrás), 6 = O (izquierda).
+        let (adelante, derecha, atras, izquierda) = (alcance(0)?, alcance(2)?, alcance(4)?, alcance(6)?);
+        RangoCalibrado::medido(
+            Eje::nuevo(0.0, -izquierda, derecha, ancho_cm / 2.0),
+            Eje::nuevo(0.0, -atras, adelante, prof_cm / 2.0),
+            Origen::Limites,
+        )
+    }
+
     /// Dirección donde menos llegó, para señalar el déficit. `None` si
     /// todavía no hay intentos registrados.
     pub fn direccion_mas_debil(&self) -> Option<&Intento> {
@@ -184,6 +208,36 @@ fn tolerancia_cm(ancho_cm: f64, prof_cm: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn intento(direccion: usize, alcance_cm: f64) -> Intento {
+        Intento { direccion, tiempo_s: 1.0, alcance_cm, fraccion_objetivo: 1.0 }
+    }
+
+    #[test]
+    fn el_ejercicio_completo_le_sirve_de_calibracion_al_juego() {
+        let mut ej = EjercicioLimites::default();
+        // N, E, S, O más una diagonal, que no se usa.
+        for (dir, alcance) in [(0, 7.0), (2, 5.0), (4, 3.0), (6, 4.0), (1, 6.0)] {
+            ej.intentos.push(intento(dir, alcance));
+        }
+
+        let rango = ej.rango_calibrado(40.0, 40.0).expect("las cuatro cardinales alcanzan");
+
+        assert_eq!(rango.origen, crate::rango::Origen::Limites);
+        assert_eq!(rango.ml.max_cm, 5.0, "E es la derecha");
+        assert_eq!(rango.ml.min_cm, -4.0, "O es la izquierda");
+        assert_eq!(rango.ap.max_cm, 7.0, "N es adelante");
+        assert_eq!(rango.ap.min_cm, -3.0, "S es atrás");
+    }
+
+    #[test]
+    fn sin_las_cuatro_cardinales_no_hay_calibracion() {
+        let mut ej = EjercicioLimites::default();
+        for dir in [0, 2, 4] {
+            ej.intentos.push(intento(dir, 5.0));
+        }
+        assert!(ej.rango_calibrado(40.0, 40.0).is_none(), "falta el alcance hacia la izquierda");
+    }
 
     #[test]
     fn objetivo_inicial_esta_en_el_frente_del_paciente() {

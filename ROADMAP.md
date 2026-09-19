@@ -159,7 +159,7 @@ ejercicio de límites.
   presentado con el zorro y una recompensa que se corre al borde: la
   calibración es también el tutorial de controles. Vive en `EstadoJuego`, no
   en `Partida`, para sobrevivir a "Reintentar".
-- [ ] **R39 · Calibración heredada del ejercicio de límites.** Si la sesión ya
+- [x] **R39 · Calibración heredada del ejercicio de límites.** Si la sesión ya
   corrió el ejercicio (`limites.rs`), tomar los alcances de E/O y N/S en vez
   de pedir una calibración nueva. Cascada completa: límites → calibración en
   juego → default.
