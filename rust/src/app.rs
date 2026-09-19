@@ -900,7 +900,7 @@ impl PosturografoxApp {
             cop_ml: self.ultimo_ml,
             cop_ap: self.ultimo_ap,
             t_muestra: self.ultimo_t,
-            rango: self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm),
+            rango: self.rango_del_paciente(),
             exigencia: self.config.exigencia_juego,
             semiejes_cm: [self.config.ancho_cm / 2.0, self.config.prof_cm / 2.0],
             conectado: self.conexion.is_some(),
@@ -913,6 +913,12 @@ impl PosturografoxApp {
             pantalla_actual: actual,
             proxima_pantalla: proxima.unwrap_or_default(),
         }
+    }
+
+    /// Alcance de esta persona: el que midió el juego, o el de referencia
+    /// recortado a la plataforma mientras no haya calibración.
+    fn rango_del_paciente(&self) -> rango::RangoCalibrado {
+        self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm)
     }
 
     /// Qué exigencia proponer para la próxima partida, a partir de lo que el
@@ -953,7 +959,7 @@ impl PosturografoxApp {
     /// cocientes del CTSIB.
     fn archivar_partida(&mut self) {
         let Some(resultado) = self.estado_juego.tomar_resultado() else { return };
-        let rango = self.estado_juego.rango(self.config.ancho_cm, self.config.prof_cm);
+        let rango = self.rango_del_paciente();
         let tramo: Vec<[f64; 3]> = self
             .registro_juego
             .iter()
@@ -1549,8 +1555,14 @@ impl PosturografoxApp {
     }
 
     fn tarjetas_ejercicios(&mut self, ui: &mut egui::Ui) {
+        // Los objetivos se reparten sobre el alcance de esta persona, así que
+        // sin decir cuál se usó el "alcance medio" del resultado no se puede
+        // interpretar: no es lo mismo medido contra su propio límite que
+        // contra el rango de referencia.
+        let origen_objetivos = self.ejercicio.rango().origen.etiqueta();
         tarjeta(ui, "LÍMITES DE ESTABILIDAD", AMARILLO, |ui| {
             if self.ejercicio.activo() {
+                ui.label(egui::RichText::new(format!("Objetivos según: {origen_objetivos}")).small());
                 if self.ejercicio.completo() {
                     ui.vertical(|ui| {
                         if let Some(resumen) = self.ejercicio.resumen() {
@@ -1573,7 +1585,7 @@ impl PosturografoxApp {
                         });
                         ui.horizontal(|ui| {
                             if ui.button("Reiniciar").clicked() {
-                                self.ejercicio.iniciar();
+                                self.ejercicio.iniciar(self.rango_del_paciente());
                             }
                             if ui.button("Exportar CSV").clicked() {
                                 match exportar_limites(&self.paciente, &self.ejercicio.intentos) {
@@ -1594,7 +1606,7 @@ impl PosturografoxApp {
                 .on_hover_text("Primero súbase a la plataforma")
                 .clicked()
             {
-                self.ejercicio.iniciar();
+                self.ejercicio.iniciar(self.rango_del_paciente());
             }
         });
         let mut abrir_juego = false;
@@ -2147,7 +2159,7 @@ impl PosturografoxApp {
                     Points::new("COP", actual).shape(MarkerShape::Circle).filled(true).radius(7.0).color(CORAL),
                 );
 
-                if let Some(obj) = self.ejercicio.objetivo_actual(self.config.ancho_cm, self.config.prof_cm) {
+                if let Some(obj) = self.ejercicio.objetivo_actual() {
                     let anillo: PlotPoints = vec![[obj.x, obj.y]].into();
                     plot_ui.points(
                         Points::new("Objetivo", anillo)
@@ -2312,7 +2324,7 @@ impl eframe::App for PosturografoxApp {
 
         if self.ocupado {
             let dt = ui.input(|i| i.stable_dt);
-            self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, self.config.ancho_cm, self.config.prof_cm, dt);
+            self.ejercicio.actualizar(self.ultimo_ml, self.ultimo_ap, dt);
             // El examen de límites ya mide hasta dónde llega esta persona: el
             // juego lo aprovecha en vez de pedir otra calibración.
             if let Some(rango) = self.ejercicio.rango_calibrado(self.config.ancho_cm, self.config.prof_cm) {

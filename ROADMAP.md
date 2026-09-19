@@ -208,3 +208,18 @@ ejercicio de límites.
   moviera sola, dos sesiones dejarían de ser comparables y se perdería
   justamente lo que la fase viene a ganar. Sin datos suficientes se dice por
   qué no hay sugerencia.
+
+- [x] **R46 · El examen de límites, también al alcance del paciente.** Los ocho
+  objetivos se repartían sobre el semieje de la plataforma: a 0.7 de 20 cm son
+  14 cm de COP hacia el costado, más que apoyarse por completo en un pie. O
+  sea inalcanzables para cualquiera, y como un objetivo solo se daba por hecho
+  al tocarlo y no había tiempo máximo, el examen se quedaba clavado en esa
+  dirección para siempre. Es el mismo error de escala que R37 sacó del juego.
+  Ahora los objetivos salen del alcance de la persona, con el alcance de cada
+  lado en su cuadrante —la figura deja de ser un círculo y toma la forma real
+  de sus límites—, alrededor de su reposo y no del cero de la plataforma. La
+  zona de acierto pasa a ser proporcional a la distancia de cada dirección,
+  con un piso de 1 cm. Se agrega tiempo máximo por dirección: no llegar es un
+  resultado del examen, no un motivo para dejarlo colgado. Y el alcance que se
+  informa se mide desde el reposo, así que el rango que hereda el juego (R39)
+  ya no pierde el centro.
