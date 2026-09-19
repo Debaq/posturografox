@@ -75,7 +75,7 @@ const METROS_POR_CICLO: f32 = 600.0;
 // día → noche → día → halloween → día → noche → ...
 const SECUENCIA_FONDOS: [Fondo; 4] = [Fondo::Dia, Fondo::Noche, Fondo::Dia, Fondo::Halloween];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fondo {
     Dia,
     Noche,
@@ -119,9 +119,14 @@ const MARGEN_PISTA: f32 = 24.0;
 // --- audio (ver assets/musica/CREDITOS.txt por licencias) ---
 const MUSICA_MENU: &[u8] = include_bytes!("../assets/musica/menu.ogg");
 const MUSICA_JUGANDO: &[u8] = include_bytes!("../assets/musica/jugando.ogg");
+const MUSICA_NOCHE: &[u8] = include_bytes!("../assets/musica/noche.ogg");
 const MUSICA_HALLOWEEN: &[u8] = include_bytes!("../assets/musica/halloween.ogg");
 const SONIDO_COMER: &[u8] = include_bytes!("../assets/musica/comer.ogg");
+const SONIDO_COMER_CONEJO: &[u8] = include_bytes!("../assets/musica/comer_conejo.ogg");
 const SONIDO_CAIDA: &[u8] = include_bytes!("../assets/musica/caida.ogg");
+const SONIDO_GOLPE: &[u8] = include_bytes!("../assets/musica/golpe.ogg");
+const SONIDO_TIC: &[u8] = include_bytes!("../assets/musica/tic.ogg");
+const SONIDO_INICIO: &[u8] = include_bytes!("../assets/musica/inicio.ogg");
 const SONIDO_VICTORIA: &[u8] = include_bytes!("../assets/musica/victoria.ogg");
 const SONIDO_DERROTA: &[u8] = include_bytes!("../assets/musica/derrota.ogg");
 
@@ -131,16 +136,33 @@ const SONIDO_DERROTA: &[u8] = include_bytes!("../assets/musica/derrota.ogg");
 /// `const` en una sola copia. Si no lo hiciera, la precarga guardaría el
 /// audio bajo una clave que el juego nunca pide y cada cambio de pista
 /// volvería a decodificar el .ogg entero (más de medio segundo de freno).
-pub const AUDIOS: [&[u8]; 7] =
-    [MUSICA_MENU, MUSICA_JUGANDO, MUSICA_HALLOWEEN, SONIDO_COMER, SONIDO_CAIDA, SONIDO_VICTORIA, SONIDO_DERROTA];
+pub const AUDIOS: [&[u8]; 12] = [
+    MUSICA_MENU,
+    MUSICA_JUGANDO,
+    MUSICA_NOCHE,
+    MUSICA_HALLOWEEN,
+    SONIDO_COMER,
+    SONIDO_COMER_CONEJO,
+    SONIDO_CAIDA,
+    SONIDO_GOLPE,
+    SONIDO_TIC,
+    SONIDO_INICIO,
+    SONIDO_VICTORIA,
+    SONIDO_DERROTA,
+];
 
 const A_MENU: usize = 0;
 const A_JUGANDO: usize = 1;
-const A_HALLOWEEN: usize = 2;
-const A_COMER: usize = 3;
-const A_CAIDA: usize = 4;
-const A_VICTORIA: usize = 5;
-const A_DERROTA: usize = 6;
+const A_NOCHE: usize = 2;
+const A_HALLOWEEN: usize = 3;
+const A_COMER: usize = 4;
+const A_COMER_CONEJO: usize = 5;
+const A_CAIDA: usize = 6;
+const A_GOLPE: usize = 7;
+const A_TIC: usize = 8;
+const A_INICIO: usize = 9;
+const A_VICTORIA: usize = 10;
+const A_DERROTA: usize = 11;
 
 /// Muestras crudas de un .ogg ya decodificado.
 pub type Pcm = rodio::buffer::SamplesBuffer<i16>;
@@ -152,11 +174,17 @@ type Fuente = rodio::source::Buffered<Pcm>;
 /// Segundos que dura el cruce entre la pista que sale y la que entra.
 const CRUCE_S: f32 = 0.8;
 
+/// Lo que suena de fondo en cada momento del juego. Siempre hay una sola:
+/// los jingles de ganar y perder también son pistas, así que entran por el
+/// mismo cruce que las demás y la música de la partida se apaga sola.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pista {
     Menu,
     Jugando,
+    Noche,
     Halloween,
+    Victoria,
+    Derrota,
 }
 
 impl Pista {
@@ -164,7 +192,10 @@ impl Pista {
         match self {
             Pista::Menu => A_MENU,
             Pista::Jugando => A_JUGANDO,
+            Pista::Noche => A_NOCHE,
             Pista::Halloween => A_HALLOWEEN,
+            Pista::Victoria => A_VICTORIA,
+            Pista::Derrota => A_DERROTA,
         }
     }
 }
@@ -610,18 +641,19 @@ struct Partida {
     puntaje: f32,
     game_over: bool,
     temporizador_reinicio: f32,
-    /// Cuántas veces sonó ya el jingle de ganar/perder (tope REPETICIONES_SONIDO_FIN).
-    repeticiones_sonido_fin: u8,
-    /// Cuenta regresiva para la próxima repetición de ese jingle.
-    temporizador_sonido_fin: f32,
     /// Gallinas/conejos comidos que hacen de "escudo": cada roca que golpea
     /// consume el último de la pila en vez de terminar la partida.
     vidas: Vec<TipoRecompensa>,
     /// Segundos restantes de congelamiento tras perder una vida contra una
-    /// roca (placeholder hasta que haya una animación de golpe).
+    /// roca: mientras dura se dibuja la animación de caída y la pantalla
+    /// se sacude, y ni el reloj ni los obstáculos avanzan.
     pausa: f32,
     /// Cuenta regresiva de la partida completa; en 0 se gana.
     tiempo_restante: f32,
+    /// Si ya sonó el arranque. La partida se crea al subirse a la plataforma,
+    /// pero el sonido sale del primer `actualizar`, que es donde se generan
+    /// todos los eventos sonoros.
+    arranco: bool,
     /// Cuánto duraba esta partida al empezar (de la configuración). Se guarda
     /// acá para que cambiar la opción a mitad de partida no altere la que ya
     /// está en curso, y para que la pantalla de victoria diga el tiempo real.
@@ -649,10 +681,10 @@ const REINICIO_SEGUNDOS: f32 = 6.0;
 /// Segundos que se congela el juego al perder una vida contra una roca.
 const PAUSA_GOLPE_SEGUNDOS: f32 = 0.8;
 
-/// El jingle de ganar/perder se repite (no queda sonando solo una vez ni en
-/// loop infinito) hasta este tope, cada INTERVALO_SONIDO_FIN segundos.
-const REPETICIONES_SONIDO_FIN: u8 = 3;
-const INTERVALO_SONIDO_FIN: f32 = 2.0;
+/// Desde acá suena un tic por segundo hasta que termina la partida. El reloj
+/// está arriba a la derecha, que es justo donde no mira quien está parado
+/// sobre la plataforma mirando al zorro.
+const TIC_FINAL_SEGUNDOS: f32 = 3.0;
 
 impl Partida {
     /// `duracion_s` viene de la zona de configuración (ver src/config.rs).
@@ -668,11 +700,10 @@ impl Partida {
             puntaje: 0.0,
             game_over: false,
             temporizador_reinicio: REINICIO_SEGUNDOS,
-            repeticiones_sonido_fin: 0,
-            temporizador_sonido_fin: 0.0,
             vidas: Vec::new(),
             pausa: 0.0,
             tiempo_restante: duracion_s,
+            arranco: false,
             duracion_s,
             gano: false,
             particulas: Vec::new(),
@@ -765,10 +796,15 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 
     let partida = estado.partida.get_or_insert_with(|| Partida::nueva(entrada.duracion_partida_s));
 
+    // Única decisión de qué suena, para todo el frame. Antes la pista de la
+    // partida se ponía más abajo, después de haber cortado la música al
+    // ganar: el jingle de victoria y la música de fondo terminaban sonando
+    // encima uno del otro.
+    if let Some(audio) = audio.as_deref_mut() {
+        audio.poner_pista(pista_de(partida));
+    }
+
     if partida.game_over {
-        if let Some(audio) = audio.as_deref_mut() {
-            repetir_sonido_fin(audio, partida, A_DERROTA, entrada.dt.clamp(0.0, 0.1));
-        }
         partida.temporizador_reinicio -= entrada.dt.clamp(0.0, 0.1);
         let (salir_boton, reintentar) = dibujar_game_over(
             ui,
@@ -784,15 +820,6 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
         return salir_tecla || salir_boton;
     }
 
-    if let Some(audio) = audio.as_deref_mut() {
-        let tramo = (partida.puntaje / METROS_POR_CICLO) as usize % SECUENCIA_FONDOS.len();
-        let pista = match SECUENCIA_FONDOS[tramo] {
-            Fondo::Halloween => Pista::Halloween,
-            Fondo::Dia | Fondo::Noche => Pista::Jugando,
-        };
-        audio.poner_pista(pista);
-    }
-
     // La geometría del área de juego se arma una vez por frame y se le pasa a
     // la simulación; así el movimiento y las colisiones no dependen de egui.
     let area = ui.available_rect_before_wrap();
@@ -806,17 +833,11 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
 
     for sonido in actualizar(partida, &entrada, &escenario) {
         if let Some(audio) = audio.as_deref_mut() {
-            audio.reproducir_efecto(match sonido {
-                Sonido::Golpe => A_CAIDA,
-                Sonido::Comer => A_COMER,
-            });
+            audio.reproducir_efecto(sonido.indice());
         }
     }
 
     if partida.gano {
-        if let Some(audio) = audio.as_deref_mut() {
-            repetir_sonido_fin(audio, partida, A_VICTORIA, entrada.dt.clamp(0.0, 0.1));
-        }
         if partida.puntaje > estado.puntaje_maximo {
             estado.puntaje_maximo = partida.puntaje;
             guardar_mejor_puntaje(estado.puntaje_maximo);
@@ -850,21 +871,20 @@ pub fn mostrar(ui: &mut Ui, estado: &mut EstadoJuego, entrada: EntradaJuego) -> 
     salir_tecla || salir_boton
 }
 
-/// Corta la música de fondo (solo la primera vez) y hace sonar `sonido`
-/// hasta REPETICIONES_SONIDO_FIN veces, separadas por INTERVALO_SONIDO_FIN
-/// segundos, mientras dura la pantalla de game over o victoria.
-fn repetir_sonido_fin(audio: &mut Audio, partida: &mut Partida, sonido: usize, dt: f32) {
-    if partida.repeticiones_sonido_fin == 0 {
-        audio.detener_musica();
+/// Qué tiene que estar sonando según en qué anda la partida. Ganar o perder
+/// reemplaza la música: el jingle queda en loop hasta que se reinicia.
+fn pista_de(partida: &Partida) -> Pista {
+    if partida.game_over {
+        return Pista::Derrota;
     }
-    if partida.repeticiones_sonido_fin >= REPETICIONES_SONIDO_FIN {
-        return;
+    if partida.gano {
+        return Pista::Victoria;
     }
-    partida.temporizador_sonido_fin -= dt;
-    if partida.temporizador_sonido_fin <= 0.0 {
-        audio.reproducir_efecto(sonido);
-        partida.repeticiones_sonido_fin += 1;
-        partida.temporizador_sonido_fin = INTERVALO_SONIDO_FIN;
+    let tramo = (partida.puntaje / METROS_POR_CICLO) as usize % SECUENCIA_FONDOS.len();
+    match SECUENCIA_FONDOS[tramo] {
+        Fondo::Dia => Pista::Jugando,
+        Fondo::Noche => Pista::Noche,
+        Fondo::Halloween => Pista::Halloween,
     }
 }
 
@@ -936,20 +956,53 @@ impl Escenario {
 /// toca el audio: solo dice qué pasó.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sonido {
+    /// La roca que termina la partida.
     Golpe,
-    Comer,
+    /// Roca contra un escudo: duele pero se sigue jugando.
+    GolpeEscudo,
+    Comer(TipoRecompensa),
+    /// Un tic por segundo en la cuenta final.
+    Tic,
+    /// Arranque de la partida, cuando el paciente ya está sobre la plataforma.
+    Inicio,
+}
+
+impl Sonido {
+    fn indice(self) -> usize {
+        match self {
+            Sonido::Golpe => A_CAIDA,
+            Sonido::GolpeEscudo => A_GOLPE,
+            Sonido::Comer(TipoRecompensa::Gallina) => A_COMER,
+            Sonido::Comer(TipoRecompensa::Conejo) => A_COMER_CONEJO,
+            Sonido::Tic => A_TIC,
+            Sonido::Inicio => A_INICIO,
+        }
+    }
 }
 
 fn actualizar(partida: &mut Partida, entrada: &EntradaJuego, escenario: &Escenario) -> Vec<Sonido> {
     let dt = entrada.dt.clamp(0.0, 0.1);
     let mut sonidos = Vec::new();
 
+    if !partida.arranco {
+        partida.arranco = true;
+        sonidos.push(Sonido::Inicio);
+    }
+
     if partida.pausa > 0.0 {
         partida.pausa = (partida.pausa - dt).max(0.0);
         return sonidos; // congelado: nada se mueve ni spawnea mientras dura el golpe
     }
 
+    let antes = partida.tiempo_restante;
     partida.tiempo_restante = (partida.tiempo_restante - dt).max(0.0);
+    // Un tic por cada segundo entero que se cruza en la cuenta final.
+    if partida.tiempo_restante > 0.0
+        && partida.tiempo_restante <= TIC_FINAL_SEGUNDOS
+        && antes.ceil() > partida.tiempo_restante.ceil()
+    {
+        sonidos.push(Sonido::Tic);
+    }
     if partida.tiempo_restante <= 0.0 {
         partida.gano = true;
         return sonidos;
@@ -1046,11 +1099,12 @@ fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, sonidos: &m
     for _ in 0..vidas_consumidas {
         partida.vidas.pop();
         partida.pausa = PAUSA_GOLPE_SEGUNDOS;
-        sonidos.push(Sonido::Golpe);
+        sonidos.push(Sonido::GolpeEscudo);
     }
     if golpe_mortal {
         partida.game_over = true;
         partida.temporizador_reinicio = REINICIO_SEGUNDOS;
+        sonidos.push(Sonido::Golpe); // la roca que termina la partida sí se escucha
     }
 
     let mut i = 0;
@@ -1063,7 +1117,7 @@ fn resolver_colisiones(partida: &mut Partida, escenario: &Escenario, sonidos: &m
             let recompensa = partida.recompensas.remove(i);
             partida.puntaje += recompensa.tipo.puntos();
             partida.vidas.push(recompensa.tipo);
-            sonidos.push(Sonido::Comer);
+            sonidos.push(Sonido::Comer(recompensa.tipo));
             continue;
         }
         i += 1;
@@ -1512,7 +1566,7 @@ mod tests {
         let sonidos = actualizar(&mut partida, &entrada(0.016), &esc);
 
         assert!(partida.game_over, "sin vidas, una roca termina la partida");
-        assert!(sonidos.is_empty(), "el jingle de derrota lo maneja la pantalla de game over");
+        assert_eq!(sonidos, vec![Sonido::Inicio, Sonido::Golpe], "la roca que mata se escucha");
     }
 
     #[test]
@@ -1528,7 +1582,7 @@ mod tests {
         assert!(!partida.game_over, "con vidas de sobra no se pierde");
         assert_eq!(partida.vidas.len(), 1, "se consume una sola vida");
         assert!(partida.pausa > 0.0, "el golpe congela el juego un momento");
-        assert_eq!(sonidos, vec![Sonido::Golpe]);
+        assert_eq!(sonidos, vec![Sonido::Inicio, Sonido::GolpeEscudo], "con escudo suena distinto que el golpe final");
     }
 
     #[test]
@@ -1564,7 +1618,7 @@ mod tests {
         assert!(partida.recompensas.is_empty(), "la recompensa atrapada desaparece");
         assert_eq!(partida.vidas, vec![TipoRecompensa::Conejo]);
         assert!(partida.puntaje >= puntaje_previo + TipoRecompensa::Conejo.puntos());
-        assert_eq!(sonidos, vec![Sonido::Comer]);
+        assert_eq!(sonidos, vec![Sonido::Inicio, Sonido::Comer(TipoRecompensa::Conejo)]);
     }
 
     #[test]
@@ -1665,6 +1719,94 @@ mod tests {
             (A_DERROTA, SONIDO_DERROTA),
         ] {
             assert_eq!(AUDIOS[indice].len(), esperado.len(), "AUDIOS[{indice}] no es el archivo esperado");
+        }
+    }
+
+    #[test]
+    fn ganar_o_perder_reemplaza_la_musica_de_la_partida() {
+        // El bug: el jingle de fin sonaba encima de la música de fondo porque
+        // la pista de la partida se volvía a poner en el frame siguiente.
+        let mut partida = Partida::nueva(60.0);
+        assert!(matches!(pista_de(&partida), Pista::Jugando));
+
+        partida.puntaje = METROS_POR_CICLO * 3.0; // tramo de halloween
+        assert!(matches!(pista_de(&partida), Pista::Halloween));
+
+        partida.gano = true;
+        assert!(matches!(pista_de(&partida), Pista::Victoria), "al ganar no puede seguir la música de la partida");
+
+        partida.gano = false;
+        partida.game_over = true;
+        assert!(matches!(pista_de(&partida), Pista::Derrota), "al perder no puede seguir la música de la partida");
+
+        // Reintentar vuelve a la música de la partida.
+        assert!(matches!(pista_de(&Partida::nueva(60.0)), Pista::Jugando));
+    }
+
+    #[test]
+    fn cada_pista_suena_un_audio_distinto() {
+        let pistas = [Pista::Menu, Pista::Jugando, Pista::Halloween, Pista::Victoria, Pista::Derrota];
+        let indices: Vec<usize> = pistas.iter().map(|p| p.indice()).collect();
+        for (i, indice) in indices.iter().enumerate() {
+            assert!(*indice < AUDIOS.len(), "la pista {i} apunta fuera de AUDIOS");
+            assert_eq!(indices.iter().filter(|otro| *otro == indice).count(), 1, "dos pistas comparten audio");
+        }
+    }
+
+    #[test]
+    fn la_cuenta_final_hace_un_tic_por_segundo() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        partida.tiempo_restante = TIC_FINAL_SEGUNDOS + 0.5;
+        actualizar(&mut partida, &entrada(0.016), &esc); // consume el sonido de arranque
+
+        let mut tics = 0;
+        let mut pasos = 0;
+        while partida.tiempo_restante > 0.0 && pasos < 1_000 {
+            tics += actualizar(&mut partida, &entrada(0.1), &esc).iter().filter(|s| **s == Sonido::Tic).count();
+            pasos += 1;
+        }
+
+        assert_eq!(tics, 3, "un tic por cada uno de los últimos segundos; el 0 ya es el jingle de victoria");
+    }
+
+    #[test]
+    fn el_tic_no_suena_antes_de_la_cuenta_final() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        let mut sonidos = Vec::new();
+        for _ in 0..100 {
+            sonidos.extend(actualizar(&mut partida, &entrada(0.1), &esc));
+        }
+        assert!(partida.tiempo_restante > TIC_FINAL_SEGUNDOS, "la partida todavía no está por terminar");
+        assert!(!sonidos.contains(&Sonido::Tic), "el tic es solo para el final");
+    }
+
+    #[test]
+    fn la_partida_avisa_cuando_arranca() {
+        let esc = escenario();
+        let mut partida = Partida::nueva(60.0);
+        assert_eq!(actualizar(&mut partida, &entrada(0.016), &esc), vec![Sonido::Inicio]);
+        assert!(
+            !actualizar(&mut partida, &entrada(0.016), &esc).contains(&Sonido::Inicio),
+            "el arranque suena una sola vez"
+        );
+    }
+
+    #[test]
+    fn cada_fondo_tiene_su_propia_musica() {
+        let mut partida = Partida::nueva(60.0);
+        let mut vistas = Vec::new();
+        for (tramo, fondo) in SECUENCIA_FONDOS.iter().enumerate() {
+            partida.puntaje = METROS_POR_CICLO * tramo as f32 + 1.0;
+            vistas.push((*fondo, pista_de(&partida).indice()));
+        }
+        for (fondo, indice) in &vistas {
+            for (otro_fondo, otro_indice) in &vistas {
+                if fondo != otro_fondo {
+                    assert_ne!(indice, otro_indice, "{fondo:?} y {otro_fondo:?} comparten pista");
+                }
+            }
         }
     }
 }

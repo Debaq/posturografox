@@ -1,11 +1,14 @@
 menu.ogg      — "Home Menu", del pack "Surpass Your Limits!" por Preston Peak (PPEAK)
 jugando.ogg   — "Leaving Home", del mismo pack
+noche.ogg     — "Leaving Home (var)", del mismo pack (variación del tema de
+             jugando.ogg; suena mientras el fondo es de noche)
 halloween.ogg — "Boneyard", del mismo pack (suena en vez de jugando.ogg
              mientras el fondo es de halloween)
              Fuente: https://opengameart.org/content/free-action-chiptune-music-pack
              Licencia: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
              Reencodeados a Ogg Vorbis mono (calidad ~q4) para reducir tamaño;
-             sin otros cambios de contenido.
+             noche.ogg sale del .wav original del pack (syl_wav_3.zip), el resto
+             de los .mp3. Sin otros cambios de contenido.
 
 comer.ogg    — "Apple Bite" (mordisco), subido a OpenGameArt, extraído de una
              grabación de freesound.org
@@ -25,3 +28,13 @@ derrota.ogg  — "Game Over - Repeating Dream", del pack "Game Over Jingles Pack
              por Devlin Bataric (recortado a los primeros ~3.5s con fade-out)
              Fuente: https://opengameart.org/content/69-game-over-jingles-pack
              Licencia: CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+
+golpe.ogg         — "sfx_damage_hit8" (roca contra un escudo)
+comer_conejo.ogg  — "sfx_sounds_powerup8" (atrapar un conejo)
+tic.ogg           — "sfx_sounds_Blip7" (cuenta de los últimos segundos)
+inicio.ogg        — "sfx_sounds_fanfare3" (arranque de la partida)
+             Los cuatro salen del pack "The Essential Retro Video Game Sound
+             Effects Collection [512 sounds]", por Juhani Junkala (SubspaceAudio).
+             Fuente: https://opengameart.org/content/512-sound-effects-8-bit-style
+             Licencia: CC0 1.0 (dominio público, no requiere atribución)
+             Reencodeados a mono/Ogg Vorbis; sin otros cambios de contenido.

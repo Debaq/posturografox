@@ -124,7 +124,10 @@ mod tests {
         }
 
         assert_eq!(imagenes, crate::juego::HOJAS.len(), "faltaron imágenes");
-        assert!(precarga.progreso() > 0.5, "el avance debería reflejar lo ya entregado");
+        // Las imágenes van primero, así que con todas entregadas el avance ya
+        // tiene que cubrirlas (puede ser más: el audio sigue llegando).
+        let solo_imagenes = crate::juego::HOJAS.len() as f32 / precarga.total() as f32;
+        assert!(precarga.progreso() >= solo_imagenes, "el avance debería reflejar lo ya entregado");
         assert!(!precarga.termino(), "todavía falta el audio");
     }
 
