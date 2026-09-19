@@ -113,8 +113,20 @@ se queda con el que responde `# POSTUROGRAFOX,1`.
 
 ## Releases
 
-Al pushear un tag `vX.Y.Z` se compilan los binarios de Windows y Linux y se
-publica un release con ese nombre (ver Actions).
+Al pushear un tag `vX.Y.Z` se compila y se publica un release con ese nombre
+(ver Actions). Cada release trae, por plataforma:
+
+| Archivo | Para qué |
+|---|---|
+| `Posturografox-X.Y.Z-x86_64.AppImage` | Linux: se le da permiso de ejecución y corre, sin instalar nada |
+| `Posturografox-X.Y.Z-windows-setup.exe` | Windows: instalador con accesos directos y desinstalador |
+| `posturografox-linux` / `posturografox-windows.exe` | El binario suelto, para probar una versión sin instalar |
+
+El AppImage existe porque el binario suelto queda atado a la glibc de la máquina
+que lo compiló y falla en distros más viejas. El instalador, porque un `.exe`
+pelado no deja acceso directo ni se desinstala. Los detalles y lo que falta
+—empezando por la firma de código en Windows— están en
+[`packaging/README.md`](packaging/README.md).
 
 ## Estado
 

@@ -268,3 +268,30 @@ dos fichas terminen diciendo cosas distintas.
   nombre del paciente son dos lugares donde pueden decir cosas distintas. Sin
   base abierta todo sigue funcionando como antes, con el campo de texto y el
   historial local, que es el archivo que no necesita frase de paso.
+
+## Fase 9 — Que se pueda instalar
+
+El release subía **el binario pelado** de cada plataforma. En Linux eso queda
+atado a la glibc de la máquina que compiló: en la distro vieja de un box falla con
+`GLIBC_2.xx not found`, que es el único equipo donde importaba que funcionara. En
+Windows, un `.exe` suelto no deja acceso directo, no se desinstala y no se puede
+volver a una versión anterior sin adivinar qué archivo era.
+
+- [x] **R51 · AppImage en Linux.** `packaging/linux/build-appimage.sh`, el mismo
+  script en la consola y en CI. Ejecuta desde `~/.local/share/posturografox`
+  porque el paquete es de solo lectura y el historial, los CSV y los informes
+  tienen que poder escribirse. El arte y el audio ya viajan dentro del binario,
+  así que no hay recursos que empaquetar.
+- [x] **R52 · Instalador en Windows.** Inno Setup 6, sin exigir administrador —en
+  una institución el operador no lo es, y pedir UAC es pedirle que llame a
+  informática para trabajar—, con accesos directos, desinstalador y un acceso a
+  `PRIVACIDAD.md`. Desinstalar no borra datos: viven en la carpeta del usuario.
+- [x] **R53 · El binario suelto se sigue publicando.** No es redundancia: es la
+  red cuando el paquete falla en un equipo particular, y la forma de probar una
+  versión sin instalar nada.
+- [ ] **R54 · Firma de código en Windows.** Sin firmar, SmartScreen advierte la
+  primera vez que alguien abre el instalador. Necesita comprar un certificado y
+  hacer el trámite, así que no es trabajo de código; queda anotado para que la
+  advertencia no se lea como un error del programa.
+- [ ] **R55 · Ícono embebido en el `.exe`.** Hoy el ícono lo pone el instalador
+  en el acceso directo; el ejecutable en sí sale sin ícono en el Explorador.

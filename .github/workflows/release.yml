@@ -46,18 +46,49 @@ jobs:
         working-directory: rust
         run: cargo build --release
 
-      - name: Empaquetar binario
+      # El binario suelto se publica igual que antes, además del paquete: sirve
+      # para probar una versión sin instalar nada, y es la red si el instalador
+      # o el AppImage fallan en un equipo particular.
+      - name: Guardar el binario suelto
         shell: bash
-        working-directory: rust
         run: |
           mkdir -p out
-          cp "target/release/posturografox${{ matrix.ext }}" \
+          cp "rust/target/release/posturografox${{ matrix.ext }}" \
              "out/posturografox-${{ matrix.platform }}${{ matrix.ext }}"
+
+      # AppImage y no un binario pelado: compilado en Ubuntu, el binario falla
+      # en una distro más vieja con "GLIBC_2.xx not found", que es justo el PC
+      # que hay en un box y que nadie actualiza.
+      - name: Empaquetar AppImage (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          # linuxdeploy se baja acá y el script lo recibe por LINUXDEPLOY: así
+          # el mismo script sirve en CI y en la consola de quien ya lo tiene.
+          curl -fsSL -o linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          # Sin FUSE en el runner, un AppImage no se puede montar: se ejecuta
+          # extrayéndolo. Vale para linuxdeploy y para el appimagetool que usa.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          LINUXDEPLOY="$PWD/linuxdeploy" packaging/linux/build-appimage.sh
+
+      # Instalador y no el .exe suelto: el .exe no deja acceso directo, no se
+      # desinstala y no se puede volver atrás sin adivinar qué archivo era.
+      - name: Empaquetar instalador (Windows)
+        if: matrix.platform == 'windows'
+        shell: bash
+        run: |
+          choco install innosetup -y --no-progress
+          cp rust/target/release/posturografox.exe out/posturografox.exe
+          VERSION="$(grep '^version' rust/Cargo.toml | head -1 | cut -d'"' -f2)"
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "/DMiVersion=$VERSION" "packaging/windows/posturografox.iss"
+          rm out/posturografox.exe
 
       - uses: actions/upload-artifact@v4
         with:
           name: posturografox-${{ matrix.platform }}
-          path: rust/out/*
+          path: out/*
 
   publicar:
     needs: build

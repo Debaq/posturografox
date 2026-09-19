@@ -11,5 +11,10 @@ dist/
 # Rust
 /rust/target/
 
+# Empaquetado: los paquetes y el AppDir intermedio se generan, no se versionan
+# (ver packaging/README.md). Los iconos SÍ están versionados.
+/out/
+/packaging/linux/AppDir/
+
 # Claude Code (estado local de la herramienta, no del proyecto)
 /.claude/
