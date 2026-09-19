@@ -15,3 +15,7 @@ ron = "0.12.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[profile.release]
+# Los símbolos son 6 MB de los que el binario distribuido no usa.
+strip = true
