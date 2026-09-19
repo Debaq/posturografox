@@ -8,6 +8,8 @@
 
 use egui::Color32;
 
+use crate::rango;
+
 /// Valores por defecto de cada opción, en un solo lugar para que el botón
 /// "Restaurar valores por defecto" y `Default` no puedan divergir.
 pub mod defecto {
@@ -30,6 +32,7 @@ pub mod defecto {
     pub const FILTRAR_COP: bool = true;
     pub const FILTRO_CORTE_HZ: f64 = 6.0;
     pub const DURACION_PARTIDA_S: f32 = 60.0;
+    pub const EXIGENCIA_JUEGO: f64 = crate::rango::EXIGENCIA_DEFECTO;
     pub const VOLUMEN_MUSICA: f32 = 0.35;
     pub const VOLUMEN_EFECTOS: f32 = 0.6;
 }
@@ -131,6 +134,11 @@ pub struct Config {
     // ── Modo juego ──────────────────────────────────────────────────────
     /// Cuánto dura una partida completa; al llegar a 0 sin perder, se gana.
     pub duracion_partida_s: f32,
+    /// Qué fracción del alcance del paciente hay que cubrir para llegar al
+    /// borde de la pista. Es la dosis del ejercicio: con 0.5 casi no hace
+    /// falta desplazarse y con 0.9 hay que ir al borde del equilibrio. Se
+    /// sube sesión a sesión, por eso es una opción y no una constante.
+    pub exigencia_juego: f64,
     pub volumen_musica: f32,
     pub volumen_efectos: f32,
 }
@@ -158,6 +166,7 @@ impl Default for Config {
             filtrar_cop: defecto::FILTRAR_COP,
             filtro_corte_hz: defecto::FILTRO_CORTE_HZ,
             duracion_partida_s: defecto::DURACION_PARTIDA_S,
+            exigencia_juego: defecto::EXIGENCIA_JUEGO,
             volumen_musica: defecto::VOLUMEN_MUSICA,
             volumen_efectos: defecto::VOLUMEN_EFECTOS,
         }
@@ -317,6 +326,16 @@ fn contenido(ui: &mut egui::Ui, cfg: &mut Config, acento: Color32) {
                 .on_hover_text("Cuánto hay que aguantar sin perder para ganar. Se aplica a la próxima partida.");
             ui.add(egui::DragValue::new(&mut cfg.duracion_partida_s).range(10.0..=900.0).speed(1.0).suffix(" s"));
             ui.end_row();
+            ui.label("Exigencia").on_hover_text(
+                "Cuánto del alcance del paciente hay que cubrir para llegar al borde de la pista. \
+                 Es la dosis del ejercicio: se sube a medida que mejora. Con 100% tendría que ir a su \
+                 límite real de caída, por eso el máximo es menor.",
+            );
+            ui.add(
+                egui::Slider::new(&mut cfg.exigencia_juego, rango::EXIGENCIA_MIN..=rango::EXIGENCIA_MAX)
+                    .custom_formatter(|v, _| format!("{:.0}% del alcance", v * 100.0)),
+            );
+            ui.end_row();
             ui.label("Volumen de la música");
             ui.add(egui::Slider::new(&mut cfg.volumen_musica, 0.0..=1.0).show_value(false));
             ui.end_row();
@@ -385,6 +404,7 @@ mod tests {
         assert_eq!(cfg.ancho_cm, defecto::ANCHO_CM);
         assert_eq!(cfg.duracion_partida_s, defecto::DURACION_PARTIDA_S);
         assert_eq!(cfg.umbral, defecto::UMBRAL);
+        assert_eq!(cfg.exigencia_juego, defecto::EXIGENCIA_JUEGO);
     }
 
     #[test]

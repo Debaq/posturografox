@@ -163,7 +163,7 @@ ejercicio de límites.
   corrió el ejercicio (`limites.rs`), tomar los alcances de E/O y N/S en vez
   de pedir una calibración nueva. Cascada completa: límites → calibración en
   juego → default.
-- [ ] **R40 · Exigencia configurable.** Fracción del límite alcanzado que hay
+- [x] **R40 · Exigencia configurable.** Fracción del límite alcanzado que hay
   que cubrir para llegar al borde de la pista (0.4–0.9, slider en
   Configuración junto a duración y volúmenes). Es el parámetro de
   dosificación —el que un fisio sube sesión a sesión—, así que no puede ser
