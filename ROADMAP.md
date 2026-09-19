@@ -181,9 +181,11 @@ ejercicio de límites.
   (~1.2 s a la velocidad de ese instante), no por distancia fija: con la
   rampa de velocidad, una distancia fija achica la ventana de reacción a lo
   largo de la partida y contamina la latencia con la aceleración.
-- [ ] **R43 · Métricas de maniobra.** Cruzar eventos y COP para obtener, por
+- [x] **R43 · Métricas de maniobra.** Cruzar eventos y COP para obtener, por
   maniobra: latencia de reacción (del estímulo al primer desplazamiento ML
-  sobre umbral hacia el lado correcto), velocidad pico, amplitud alcanzada en
+  sobre umbral, haya salido hacia donde haya salido: si solo contara los
+  arranques correctos, las maniobras mal dirigidas desaparecerían del
+  registro justo por estar mal), velocidad pico, amplitud alcanzada en
   cm y en % del límite calibrado, y control direccional. Agregado por
   partida: medianas por lado e índice de asimetría. Son las cuatro
   dimensiones del test de límites de estabilidad, medidas decenas de veces

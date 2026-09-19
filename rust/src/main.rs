@@ -11,6 +11,7 @@ mod historial;
 mod informe;
 mod juego;
 mod limites;
+mod maniobras;
 mod pantallas;
 mod precarga;
 mod rango;
